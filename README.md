@@ -289,7 +289,7 @@ can never add to it, which is the point - GitOps deploys specs automatically, so
 anything a spec could declare, anyone who can push to a synced repo could
 declare. It does not exist by default, and `kanea init` never writes it.
 
-Six stanzas are read:
+Seven stanzas are read:
 
 | Stanza | What it decides |
 |---|---|
@@ -297,6 +297,7 @@ Six stanzas are read:
 | `storage` | Which host directories a `host` volume may mount (`allowed_host_paths`) |
 | `dns` | Which resolvers the internal DNS forwards to (`upstreams`) |
 | `variables` | Node-wide defaults for spec variables - **never secrets**: `GET /v1/vars` serves them to any authenticated caller |
+| `images` | The node default for where images come from (`pull_policy`), and the [image GC](#cleaning-up-old-images)'s `gc` block |
 | `device` | A named device grant: `nodes`, `allow`, optional `mode` |
 | `socket` | A named socket grant: `path`, `allow` |
 
@@ -530,6 +531,32 @@ digest. The unattended cadence is `update { interval }` (default 6 h, floor
 5 m), but **re-applying the spec forces an immediate re-check**: after pushing
 new bytes under the same tag, `kanea apply` has the digest re-resolved within
 about a minute instead of waiting out the interval.
+
+### Cleaning up old images
+
+Nothing above ever deletes anything, so every deploy and auto-update leaves its
+predecessor behind. The **image GC** collects them: on by default, it sweeps
+every 12 hours and deletes an image only when *all three* hold - nothing
+references it (no service's declared image, pinned digest, rollback target or
+init step, and no running alloc), it is older than `min_age` (48 h), and it is
+not among the newest `keep` (2) images of a repository something still uses,
+which is your rollback material. Tune or disable it in `/etc/kanea/kanea.hcl`:
+
+```hcl
+images {
+  gc {
+    enabled  = true     # --image-gc off also disables it
+    interval = "12h"    # floor 10m
+    min_age  = "48h"    # floor 1h
+    keep     = 2        # newest N per in-use repository
+  }
+}
+```
+
+`kanea images` lists what the node holds with each image's size, age and
+in-use verdict; `kanea images --clean` runs one sweep now (admin, audited).
+A node whose *default* `pull_policy` is `never` refuses to collect at all:
+preloaded images cannot be re-pulled, so deleting one is unrecoverable.
 Groups apply in the order `env_from` lists them, and each container's own `env`
 wins over all of them - the task's and every [init step](#setup-before-a-service-starts)'s,
 because `env_from` is a statement about the service rather than about one
@@ -1003,7 +1030,7 @@ The decisions a change is most likely to trip over live in
 
 | File | Content |
 |---|---|
-| [`PRD.md`](./PRD.md) | Product Requirements Document, the **north star** (v1.110) |
+| [`PRD.md`](./PRD.md) | Product Requirements Document, the **north star** (v1.111) |
 | [`AGENTS.md`](./AGENTS.md) | Conventions and binding constraints for contributors (human & AI) |
 | [`docs/DECISIONS.md`](./docs/DECISIONS.md) | The decision record: status, trip-over bullets, refusals, spike log |
 | [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) | Boundaries, adversaries, OWASP Top 10 as built |

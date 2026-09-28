@@ -451,3 +451,16 @@ const WorkloadSlice = "kanea-workloads.slice"
 func Namespace(project string) string {
 	return "kanea-" + project
 }
+
+// ProjectFromNamespace is Namespace's inverse: the project a containerd
+// namespace belongs to, and whether it is one of ours at all. The image GC
+// enumerates namespaces rather than the Store's projects on purpose: a
+// deleted project's namespace still holds images, and those are exactly the
+// garbage worth finding (PRD §5.2.4, v1.111).
+func ProjectFromNamespace(ns string) (string, bool) {
+	project, ok := strings.CutPrefix(ns, "kanea-")
+	if !ok || project == "" {
+		return "", false
+	}
+	return project, true
+}

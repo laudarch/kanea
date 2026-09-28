@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
@@ -72,6 +73,10 @@ type Config struct {
 	// --image-pull-policy wins (the v1.51 doctrine); "" when the file or the
 	// stanza is absent, which means runtime.PullIfNotPresent.
 	ImagePullPolicy string
+	// ImageGC is the images stanza's gc block (§5.2.4, v1.111). nil when the
+	// file or the block is absent, which means the collector's own defaults:
+	// the GC is on by default, so absence here is not off.
+	ImageGC *ImageGCConfig
 	// Ignored names the top-level blocks and attributes the file carries
 	// and no decoder reads, for the startup warning.
 	Ignored []string
@@ -131,9 +136,70 @@ type hclDNS struct {
 }
 
 // hclImages reads the images stanza (v1.84, §6.2 R33): the node's default for
-// where a service's images may come from. No remain body, like the rest.
+// where a service's images may come from, and (v1.111) its gc block. No
+// remain body, like the rest.
 type hclImages struct {
-	PullPolicy string `hcl:"pull_policy,optional"`
+	PullPolicy string      `hcl:"pull_policy,optional"`
+	GC         *hclImageGC `hcl:"gc,block"`
+}
+
+// hclImageGC reads the images stanza's gc block (§5.2.4, v1.111). Durations
+// arrive as strings - the file's first - and are parsed and floor-checked in
+// Parse, where the diagnostic carries the file name.
+type hclImageGC struct {
+	Enabled  *bool  `hcl:"enabled,optional"`
+	Interval string `hcl:"interval,optional"`
+	MinAge   string `hcl:"min_age,optional"`
+	Keep     *int   `hcl:"keep,optional"`
+}
+
+// ImageGCConfig is the parsed gc block. Zero values mean "the collector's
+// default", never zero itself: Keep stays a pointer because zero is a legal
+// value there ("no data is never zero").
+type ImageGCConfig struct {
+	// Disabled is enabled = false: written positively here so the zero
+	// value of the struct means the default posture, which is on.
+	Disabled bool
+	Interval time.Duration
+	MinAge   time.Duration
+	Keep     *int
+}
+
+// The floors Parse refuses below (§15.1, v1.111). An interval tighter than
+// ten minutes is a busy-loop over containerd's image service for no plausible
+// need, and a min_age under an hour races the deploys it exists to protect.
+const (
+	MinGCInterval = 10 * time.Minute
+	MinGCMinAge   = time.Hour
+)
+
+// The Sweep accessors are nil-safe on purpose: an absent gc block means the
+// collector's own defaults, and the caller should not need to know which.
+// Zero here is "unset" - Parse's floors make a genuine zero unrepresentable
+// for the durations, and Keep carries its legal zero through the pointer.
+
+// SweepInterval is the block's interval, or zero for the default.
+func (c *ImageGCConfig) SweepInterval() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.Interval
+}
+
+// SweepMinAge is the block's min_age, or zero for the default.
+func (c *ImageGCConfig) SweepMinAge() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.MinAge
+}
+
+// SweepKeep is the block's keep, or nil for the default.
+func (c *ImageGCConfig) SweepKeep() *int {
+	if c == nil {
+		return nil
+	}
+	return c.Keep
 }
 
 // hclVariables carries the variables stanza's body raw: its attribute names
@@ -149,6 +215,46 @@ type hclVariables struct {
 // an entry is an address, or a host:port pair. An empty list is refused by
 // name: it configures nothing, and a stanza that meant "no upstreams" would
 // silently turn external resolution into SERVFAIL.
+// parseImageGC validates the gc block (§5.2.4, v1.111). Malformed or
+// below-floor values are fatal like everything else in this file: a GC
+// running on a misread cadence is worse than a daemon that says so and stops.
+func parseImageGC(raw *hclImageGC) (*ImageGCConfig, error) {
+	gc := &ImageGCConfig{}
+	if raw.Enabled != nil {
+		gc.Disabled = !*raw.Enabled
+	}
+	if s := strings.TrimSpace(raw.Interval); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return nil, fmt.Errorf("images: gc interval %q is not a duration: %w", s, err)
+		}
+		if d < MinGCInterval {
+			return nil, fmt.Errorf("images: gc interval %s is below the %s floor: "+
+				"a tighter loop polls containerd for nothing", d, MinGCInterval)
+		}
+		gc.Interval = d
+	}
+	if s := strings.TrimSpace(raw.MinAge); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return nil, fmt.Errorf("images: gc min_age %q is not a duration: %w", s, err)
+		}
+		if d < MinGCMinAge {
+			return nil, fmt.Errorf("images: gc min_age %s is below the %s floor: "+
+				"an image can be pulled before the record that references it exists, "+
+				"and min_age is what makes that race harmless", d, MinGCMinAge)
+		}
+		gc.MinAge = d
+	}
+	if raw.Keep != nil {
+		if *raw.Keep < 0 {
+			return nil, fmt.Errorf("images: gc keep %d is negative; it counts images", *raw.Keep)
+		}
+		gc.Keep = raw.Keep
+	}
+	return gc, nil
+}
+
 func validateDNSUpstreams(raw []string) ([]string, error) {
 	out := make([]string, 0, len(raw))
 	for _, entry := range raw {
@@ -273,6 +379,13 @@ func Parse(filename string, src []byte) (*Config, error) {
 		default:
 			return nil, fmt.Errorf("images: pull_policy %q is not a policy; it must be %q or %q",
 				policy, runtime.PullIfNotPresent, runtime.PullNever)
+		}
+		if root.Images.GC != nil {
+			gc, err := parseImageGC(root.Images.GC)
+			if err != nil {
+				return nil, fmt.Errorf("nodeconfig: %s: %w", filename, err)
+			}
+			cfg.ImageGC = gc
 		}
 	}
 	if root.DNS != nil {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/m18h/kanea/internal/provision"
 )
@@ -543,5 +544,74 @@ func TestParseRefusesAnUnknownPullPolicy(t *testing.T) {
 func TestParseRefusesAnUnknownAttributeInsideImages(t *testing.T) {
 	if _, err := Parse("kanea.hcl", []byte(`images { pull = "never" }`)); err == nil {
 		t.Fatal("a typo inside a read stanza must be an error, not a warning")
+	}
+}
+
+func TestParseReadsTheImageGCBlock(t *testing.T) {
+	cfg, err := Parse("kanea.hcl", []byte(`images {
+  gc {
+    enabled  = false
+    interval = "1h"
+    min_age  = "72h"
+    keep     = 0
+  }
+}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	gc := cfg.ImageGC
+	if gc == nil {
+		t.Fatal("ImageGC is nil after a declared gc block")
+	}
+	if !gc.Disabled {
+		t.Error("enabled = false did not disable")
+	}
+	if gc.Interval != time.Hour {
+		t.Errorf("Interval = %s, want 1h", gc.Interval)
+	}
+	if gc.MinAge != 72*time.Hour {
+		t.Errorf("MinAge = %s, want 72h", gc.MinAge)
+	}
+	// keep = 0 is a legal value and must survive as one, distinct from
+	// "unset" ("no data is never zero").
+	if gc.Keep == nil || *gc.Keep != 0 {
+		t.Errorf("Keep = %v, want a declared zero", gc.Keep)
+	}
+}
+
+// An absent gc block is not off: the GC is the one default in this family
+// whose absence means on, because a disk that fills silently is the surprise
+// §5.2.4 forbids. Absence here just means the collector's own defaults.
+func TestParseWithoutAGCBlockLeavesTheDefaults(t *testing.T) {
+	cfg, err := Parse("kanea.hcl", []byte(`images { pull_policy = "never" }`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.ImageGC != nil {
+		t.Fatalf("ImageGC = %+v, want nil when the block is absent", cfg.ImageGC)
+	}
+	if cfg.ImageGC.SweepInterval() != 0 || cfg.ImageGC.SweepMinAge() != 0 || cfg.ImageGC.SweepKeep() != nil {
+		t.Error("the nil-safe accessors must answer unset on an absent block")
+	}
+}
+
+func TestParseRefusesGCFloorsByName(t *testing.T) {
+	cases := map[string]string{
+		"a sub-floor interval": `images { gc { interval = "5m" } }`,
+		"a sub-floor min_age":  `images { gc { min_age = "10m" } }`,
+		"a negative keep":      `images { gc { keep = -1 } }`,
+		"a malformed interval": `images { gc { interval = "soon" } }`,
+		"a malformed min_age":  `images { gc { min_age = "later" } }`,
+	}
+	for name, src := range cases {
+		if _, err := Parse("kanea.hcl", []byte(src)); err == nil {
+			t.Errorf("%s must be refused at parse", name)
+		}
+	}
+}
+
+func TestParseRefusesAnUnknownAttributeInsideGC(t *testing.T) {
+	if _, err := Parse("kanea.hcl", []byte(`images { gc { intervall = "12h" } }`)); err == nil {
+		t.Fatal("a typo inside the gc block must be an error, not a warning")
 	}
 }

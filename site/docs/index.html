@@ -72,6 +72,8 @@
     <a class="sub" href="#nodeconfig-storage">storage</a>
     <a class="sub" href="#nodeconfig-grants">device and socket</a>
     <a class="sub" href="#nodeconfig-dns">dns</a>
+    <a class="sub" href="#nodeconfig-images">images</a>
+    <a class="sub" href="#nodeconfig-imagegc">images.gc</a>
     <a class="sub" href="#nodeconfig-variables">variables</a>
     <a class="sub" href="#nodeconfig-apply">Applying a change</a>
     <a class="sub" href="#nodeconfig-precedence">Flags and precedence</a>
@@ -1562,7 +1564,7 @@ sudo systemctl restart kanead</pre>
           <tr><td><a href="#nodeconfig-bind"><code>bind</code></a></td><td>once</td><td>Where the API and dashboard listen, and how that listener gets its certificate.</td></tr>
           <tr><td><a href="#nodeconfig-storage"><code>storage</code></a></td><td>once</td><td>Which host directories a <code>host</code> volume may mount.</td></tr>
           <tr><td><a href="#nodeconfig-dns"><code>dns</code></a></td><td>once</td><td>Which resolvers the internal DNS forwards external names to.</td></tr>
-          <tr><td><a href="#nodeconfig-images"><code>images</code></a></td><td>once</td><td>The node's default for where a service's images may come from.</td></tr>
+          <tr><td><a href="#nodeconfig-images"><code>images</code></a></td><td>once</td><td>The node's default for where a service's images may come from, and the <a href="#nodeconfig-imagegc">image GC</a>'s <code>gc</code> block.</td></tr>
           <tr><td><a href="#nodeconfig-variables"><code>variables</code></a></td><td>once</td><td>Node-wide defaults for spec variables.</td></tr>
           <tr><td><a href="#nodeconfig-grants"><code>device</code></a></td><td>many</td><td>A named device grant, and the projects that may claim it.</td></tr>
           <tr><td><a href="#nodeconfig-grants"><code>socket</code></a></td><td>many</td><td>A named socket grant, and the projects that may claim it.</td></tr>
@@ -1843,6 +1845,35 @@ sudo systemctl restart kanead</pre>
       not a default anybody asked for.
     </p>
 
+    <h3 id="nodeconfig-imagegc">images.gc: cleaning up old images</h3>
+
+    <p>
+      Nothing else ever deletes an image, so every deploy, auto-update pin and
+      rollback leaves its predecessor behind. The image GC collects them - <b>on
+      by default</b>, and this block tunes or disables it:
+    </p>
+    <pre><code><span class="c"># /etc/kanea/kanea.hcl</span>
+<span class="k">images</span> {
+  <span class="k">gc</span> {
+    <span class="k">enabled</span>  = <span class="s">true</span>      <span class="c"># --image-gc off on kanead also disables it</span>
+    <span class="k">interval</span> = <span class="s">"12h"</span>    <span class="c"># sweep cadence; floor 10m</span>
+    <span class="k">min_age</span>  = <span class="s">"48h"</span>    <span class="c"># younger images are never touched; floor 1h</span>
+    <span class="k">keep</span>     = <span class="s">2</span>         <span class="c"># newest N per in-use repository, as rollback material</span>
+  }
+}</code></pre>
+    <p>
+      An image is deleted only when <i>all three</i> rules agree: nothing
+      references it (no service's declared image, pinned digest, rollback
+      target or init step, and no running alloc), it is older than
+      <code>min_age</code>, and it is not among the newest <code>keep</code> of a
+      repository something still uses. A node whose <i>default</i>
+      <code>pull_policy</code> is <code>"never"</code> refuses to collect at all:
+      preloaded images cannot be re-pulled, so deleting one is unrecoverable.
+      <code>kanea images</code> lists what the node holds with each image's
+      in-use verdict, and <code>kanea images --clean</code> runs one sweep now
+      (admin, audited).
+    </p>
+
     <h3 id="nodeconfig-variables">variables: node-wide spec defaults</h3>
 
     <p>
@@ -2020,6 +2051,15 @@ sudo systemctl restart kanead</pre>
 <span class="k">variables</span> {                                  <span class="c"># node-wide spec defaults; never secrets</span>
   <span class="k">domain</span>     = <span class="s">"home.lan"</span>
   <span class="k">media_root</span> = <span class="s">"/mnt/media"</span>
+}
+
+<span class="k">images</span> {                                     <span class="c"># the node default; a task's own pull_policy wins</span>
+  <span class="k">pull_policy</span> = <span class="s">"if-not-present"</span>
+  <span class="k">gc</span> {                                       <span class="c"># unused-image cleanup; on by default</span>
+    <span class="k">interval</span> = <span class="s">"12h"</span>
+    <span class="k">min_age</span>  = <span class="s">"48h"</span>
+    <span class="k">keep</span>     = <span class="s">2</span>
+  }
 }
 
 <span class="k">device</span> <span class="s">"gpu"</span> {                               <span class="c"># claimed as: device "dri" { grant = "gpu" }</span>
@@ -4507,6 +4547,19 @@ kanea run --image=nginx:1.27-alpine --name=web --project=demo [--count=1]</pre>
     <h4><code>kanea project</code></h4>
     <pre class="plain">kanea project sync &lt;project&gt;             # re-read the git source now
 kanea project builds &lt;project&gt; [--service=s] [--limit=N]</pre>
+
+    <h4><code>kanea images</code></h4>
+    <pre class="plain">kanea images [--clean] [--json]</pre>
+    <p>
+      The node's containerd images, per project, with each image's size, age
+      and whether anything still references it. <code>--clean</code> runs one
+      image GC sweep now (admin-only, audited) and reports what it removed and
+      reclaimed; the rules it deletes under, and the <code>gc</code> block that
+      tunes them, are in <a href="#nodeconfig-imagegc">the node config
+      reference</a>. On a node whose default <code>pull_policy</code> is
+      <code>"never"</code> the sweep answers with a refusal naming why:
+      preloaded images cannot be re-pulled.
+    </p>
 
     <h4><code>kanea volume</code></h4>
     <pre class="plain">kanea volume list [--json]</pre>

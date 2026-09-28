@@ -153,8 +153,12 @@ func TestApplyPreservesTheRestartGeneration(t *testing.T) {
 
 // The pinned digest belongs to the watcher, not to the file (§6.2 R19). An
 // apply that reset it would unpin the service, redeploy it onto its bare tag,
-// and re-pin on the next poll: two deploys of a service nobody changed.
-func TestApplyPreservesTheAutoUpdatePin(t *testing.T) {
+// and re-pin on the next poll: two deploys of a service nobody changed. The
+// check clock is the one piece of watcher state an apply does NOT carry
+// (v1.110): left zero, the next sweep re-resolves the tag, which is how a
+// re-pushed same-tag image lands with a push and an apply instead of waiting
+// out update.interval.
+func TestApplyPreservesThePinAndReArmsThePoll(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
 	h.putService(t, "shop", "web", 2)
@@ -164,13 +168,17 @@ func TestApplyPreservesTheAutoUpdatePin(t *testing.T) {
 	pinned := desiredFromStore(t, h, "shop/web")
 	pinned.Update.Auto = true
 	pinned.PinnedImage = "docker.io/library/nginx@sha256:" + strings.Repeat("a", 64)
+	pinned.RollbackImage = "docker.io/library/nginx@sha256:" + strings.Repeat("b", 64)
 	pinned.ImageCheckedAt = time.Now()
+	pinned.ImageUpdatedAt = time.Now()
 	h.putDesired(t, pinned)
 
 	// An apply from a spec file, which knows nothing about pinned digests.
 	fresh := desiredFromStore(t, h, "shop/web")
 	fresh.PinnedImage = ""
+	fresh.RollbackImage = ""
 	fresh.ImageCheckedAt = time.Time{}
+	fresh.ImageUpdatedAt = time.Time{}
 	if _, err := h.client.Apply(ctx, []reconciler.Desired{fresh}, nil); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -179,8 +187,15 @@ func TestApplyPreservesTheAutoUpdatePin(t *testing.T) {
 	if got.PinnedImage != pinned.PinnedImage {
 		t.Errorf("PinnedImage = %q after an apply, want %q preserved", got.PinnedImage, pinned.PinnedImage)
 	}
-	if got.ImageCheckedAt.IsZero() {
-		t.Error("ImageCheckedAt was reset, so the next tick would re-poll the registry")
+	if got.RollbackImage != pinned.RollbackImage {
+		t.Errorf("RollbackImage = %q after an apply, want %q preserved", got.RollbackImage, pinned.RollbackImage)
+	}
+	if got.ImageUpdatedAt.IsZero() {
+		t.Error("ImageUpdatedAt was reset, so the watcher would forget an in-flight update")
+	}
+	if !got.ImageCheckedAt.IsZero() {
+		t.Errorf("ImageCheckedAt = %v after an apply, want zero so the next sweep re-resolves the tag",
+			got.ImageCheckedAt)
 	}
 }
 

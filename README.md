@@ -526,7 +526,10 @@ replicas of one spec run different bytes. It turns on image auto-update, so the
 tag is polled, a moved digest is pinned, and **every replica rolls together**
 through `max_parallel`, `min_healthy` and the health check. It is task-only, and
 inherits auto-update's rules: not beside a `build` block, a tag rather than a
-digest.
+digest. The unattended cadence is `update { interval }` (default 6 h, floor
+5 m), but **re-applying the spec forces an immediate re-check**: after pushing
+new bytes under the same tag, `kanea apply` has the digest re-resolved within
+about a minute instead of waiting out the interval.
 Groups apply in the order `env_from` lists them, and each container's own `env`
 wins over all of them - the task's and every [init step](#setup-before-a-service-starts)'s,
 because `env_from` is a statement about the service rather than about one
@@ -1000,7 +1003,7 @@ The decisions a change is most likely to trip over live in
 
 | File | Content |
 |---|---|
-| [`PRD.md`](./PRD.md) | Product Requirements Document, the **north star** (v1.108) |
+| [`PRD.md`](./PRD.md) | Product Requirements Document, the **north star** (v1.110) |
 | [`AGENTS.md`](./AGENTS.md) | Conventions and binding constraints for contributors (human & AI) |
 | [`docs/DECISIONS.md`](./docs/DECISIONS.md) | The decision record: status, trip-over bullets, refusals, spike log |
 | [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) | Boundaries, adversaries, OWASP Top 10 as built |

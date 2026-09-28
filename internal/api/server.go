@@ -966,11 +966,23 @@ func (s *Server) applyServices(r *http.Request, req ApplyRequest) (ApplyResponse
 			svc.Generation = current.Generation
 			// The auto-update state belongs to the watcher for the same reason
 			// (§6.2 R19): the digest currently pinned, what to fall back to and
-			// when the registry was last asked are all facts about the running
+			// whether an update is in flight are all facts about the running
 			// service, not about the file. An apply that reset them would unpin
 			// the service (redeploying it onto its bare tag) and then re-pin
 			// it on the next poll, so every `kanea apply` would cost two
 			// deploys of a service nobody changed.
+			//
+			// The check clock (ImageCheckedAt) is deliberately NOT carried
+			// (v1.110): an apply is the operator saying "make it so", and the
+			// freshest answer for the tag is part of that. Left zero, the
+			// watcher's next sweep re-resolves the tag instead of waiting out
+			// update.interval, so a re-pushed same-tag image lands with a push
+			// and an apply rather than hours later. This also re-arms the
+			// clock a revert parked - the park exists so an unattended watcher
+			// does not re-pin a broken digest a minute after reverting it, and
+			// an apply is exactly the attended case it defers to. It cannot
+			// become a poll loop: the GitOps sync is last-commit-gated, so
+			// only a real change or a real operator reaches this path.
 			//
 			// Two things drop the pin rather than carry it. A changed `image`
 			// means the operator has said which tag to follow and the old
@@ -983,7 +995,6 @@ func (s *Server) applyServices(r *http.Request, req ApplyRequest) (ApplyResponse
 			if svc.Update.Auto && svc.Image == current.Image {
 				svc.PinnedImage = current.PinnedImage
 				svc.RollbackImage = current.RollbackImage
-				svc.ImageCheckedAt = current.ImageCheckedAt
 				svc.ImageUpdatedAt = current.ImageUpdatedAt
 			}
 		}

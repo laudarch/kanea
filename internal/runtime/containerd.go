@@ -14,6 +14,7 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/events"
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
@@ -250,6 +251,65 @@ func (d *containerdDriver) ImageInfo(ctx context.Context, project, ref string) (
 		return ImageInfo{}, fmt.Errorf("size of %s: %w", nref, err)
 	}
 	return ImageInfo{Digest: img.Target().Digest.String(), SizeBytes: size}, nil
+}
+
+// ImageProjects reports every project that has a containerd namespace on this
+// node. Enumerated from containerd rather than from the Store on purpose: a
+// deleted project's namespace still holds images, and those are exactly what
+// the GC exists to find (PRD §5.2.4, v1.111).
+func (d *containerdDriver) ImageProjects(ctx context.Context) ([]string, error) {
+	nss, err := d.client.NamespaceService().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list containerd namespaces: %w", err)
+	}
+	var projects []string
+	for _, ns := range nss {
+		if project, ok := ProjectFromNamespace(ns); ok {
+			projects = append(projects, project)
+		}
+	}
+	return projects, nil
+}
+
+// ListImages reports every image a project's namespace holds.
+func (d *containerdDriver) ListImages(ctx context.Context, project string) ([]OwnedImage, error) {
+	ctx = scope(ctx, project)
+	imgs, err := d.client.ImageService().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list images in %s: %w", Namespace(project), err)
+	}
+	out := make([]OwnedImage, 0, len(imgs))
+	for _, img := range imgs {
+		size, err := containerd.NewImage(d.client, img).Size(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("size of %s in %s: %w", img.Name, Namespace(project), err)
+		}
+		out = append(out, OwnedImage{
+			Ref:       img.Name,
+			Digest:    img.Target.Digest.String(),
+			SizeBytes: size,
+			CreatedAt: img.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// RemoveImage deletes one image reference from a project's namespace.
+// Synchronous, so containerd's own GC reaps the blobs and snapshots before
+// this returns and the freed bytes are real. Idempotent, like Remove.
+func (d *containerdDriver) RemoveImage(ctx context.Context, project, ref string) error {
+	ctx = scope(ctx, project)
+	nref, err := NormalizeRef(ref)
+	if err != nil {
+		return err
+	}
+	if err := d.client.ImageService().Delete(ctx, nref, images.SynchronousDelete()); err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("delete image %s in %s: %w", nref, Namespace(project), err)
+	}
+	return nil
 }
 
 // io sends the task's stdout and stderr to the alloc's log file. The full

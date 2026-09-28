@@ -99,6 +99,9 @@ type ServerConfig struct {
 	// HostInspector backs the updates view (PRD v1.108): the OS's pending
 	// packages and the component matrix, local reads only. Nil answers 503.
 	HostInspector HostInspector
+	// ImageGC backs the images view and the manual sweep (PRD v1.111,
+	// §5.2.4). Nil answers 503.
+	ImageGC ImageCollector
 	// LDAPServer names the configured directory (v1.47): audit Detail on
 	// directory logins, empty when LDAP is off. A name, never a credential.
 	LDAPServer string
@@ -257,6 +260,7 @@ type Server struct {
 	settings      SettingsService
 	upgrader      Upgrader
 	hostInspector HostInspector
+	imageGC       ImageCollector
 	ldapServer    string
 	ca            CertificateAuthority
 	publishPorts  PortPolicy
@@ -423,6 +427,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		events: cfg.Events, notifyStats: cfg.NotifyStats, publish: cfg.Publish,
 		notifier: cfg.Notifier, backups: cfg.Backups, settings: cfg.Settings,
 		upgrader: cfg.Upgrader, hostInspector: cfg.HostInspector,
+		imageGC:    cfg.ImageGC,
 		ldapServer: cfg.LDAPServer, ca: cfg.CA,
 		publishPorts: cfg.PublishPorts,
 		nodeVars:     cfg.NodeVars,
@@ -529,6 +534,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	// inspector never installs anything.
 	mux.Handle("GET "+PathUpdates,
 		s.route(policy{action: "updates.read", adminOnly: true}, s.handleUpdates))
+	// The image view and the manual GC sweep (PRD v1.111, §5.2.4). The
+	// sweep deletes node state, so it is admin-only and audited; the list
+	// is an ordinary read.
+	mux.Handle("GET "+PathImages, s.route(policy{action: "images.list"}, s.handleListImages))
+	mux.Handle("POST "+PathImagesGC,
+		s.route(policy{action: "images.gc", mutates: true, adminOnly: true}, s.handleImagesGC))
 	// Accounts. Admin-only throughout: minting a token is minting a credential,
 	// and listing users is a list of things worth attacking (§13.3).
 	mux.Handle("GET "+PathUsers, s.route(policy{action: "user.list", adminOnly: true}, s.handleListUsers))

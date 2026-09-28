@@ -339,6 +339,30 @@ type Driver interface {
 	// Exits streams task exits for a project: the reconciler's crash signal,
 	// so it never has to poll. The channel closes when ctx is done.
 	Exits(ctx context.Context, project string) (<-chan Exit, error)
+	// ImageProjects reports every project with a containerd namespace on this
+	// node, deleted projects included: their images are the image GC's whole
+	// reason to enumerate here rather than in the Store (PRD §5.2.4, v1.111).
+	ImageProjects(ctx context.Context) ([]string, error)
+	// ListImages reports every image a project's namespace holds.
+	ListImages(ctx context.Context, project string) ([]OwnedImage, error)
+	// RemoveImage deletes one image reference from a project's namespace,
+	// synchronously, so containerd's GC reaps the content behind it.
+	// Idempotent.
+	RemoveImage(ctx context.Context, project, ref string) error
 	// Close releases the containerd connection.
 	Close() error
+}
+
+// OwnedImage is one image as a project's containerd namespace holds it: the
+// image GC's unit of account (PRD §5.2.4, v1.111) and the images API's row.
+type OwnedImage struct {
+	// Ref is the name containerd stores: always the fully qualified form,
+	// because every pull goes through NormalizeRef.
+	Ref    string
+	Digest string
+	// SizeBytes is the compressed content size, ImageInfo's measure.
+	SizeBytes int64
+	// CreatedAt is when this namespace first acquired the reference: the
+	// pull time, which is what the GC's min_age is measured against.
+	CreatedAt time.Time
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/m18h/kanea/internal/edge"
 	"github.com/m18h/kanea/internal/functions"
 	"github.com/m18h/kanea/internal/gitops"
+	"github.com/m18h/kanea/internal/imagegc"
 	"github.com/m18h/kanea/internal/jobspec"
 	"github.com/m18h/kanea/internal/logging"
 	"github.com/m18h/kanea/internal/mcp"
@@ -138,6 +139,9 @@ func runAgent(args []string) error {
 	imagePullPolicy := fs.String("image-pull-policy", "",
 		"node default for where images may come from: if-not-present (default) or never "+
 			"(a service's own task.pull_policy wins)")
+	imageGCMode := fs.String("image-gc", "",
+		"image garbage collection: on (default) or off; "+
+			"tune interval/min_age/keep in kanea.hcl's images { gc {} } block")
 	baseDomain := fs.String("base-domain", "",
 		"domain exposed services get an FQDN under, e.g. apps.example.com")
 	edgeRoutes := fs.String("edge-routes", edge.DefaultSnapshotPath,
@@ -752,6 +756,28 @@ func runAgent(args []string) error {
 		return err
 	}
 
+	// The image GC (§5.2.4, v1.111): the disk-hygiene half of the watcher
+	// above. Always constructed, because the images API's read half works on
+	// any node; whether the sweep may run is the collector's own refusal,
+	// which the loop below and POST /v1/images/gc both consult.
+	gcDisabled, err := resolveImageGC(*imageGCMode, nodeCfg.ImageGC, nodeCfg.Path, logger)
+	if err != nil {
+		return err
+	}
+	imageGC, err := imagegc.New(imagegc.Config{
+		Store:          st,
+		Images:         driver,
+		Logger:         logger,
+		NodePullPolicy: pullPolicy,
+		Disabled:       gcDisabled,
+		Interval:       nodeCfg.ImageGC.SweepInterval(),
+		MinAge:         nodeCfg.ImageGC.SweepMinAge(),
+		Keep:           nodeCfg.ImageGC.SweepKeep(),
+	})
+	if err != nil {
+		return err
+	}
+
 	// The internal registry precedes the pipeline stack because the stack
 	// needs its bound address: the defaulted build target names the port that
 	// answers (§5.2.14).
@@ -881,10 +907,12 @@ func runAgent(args []string) error {
 		Upgrader: newDaemonUpgrader(logger, stop),
 		// The updates view (PRD v1.108): local reads only, never an install.
 		HostInspector: newHostInspector(logger),
-		CA:            certificateAuthority(certs),
-		PublishPorts:  portPolicy,
-		NodeVars:      nodeCfg.Variables,
-		OIDC:          provider, Sessions: users,
+		// The images view and the manual sweep (PRD v1.111, §5.2.4).
+		ImageGC:      imageGC,
+		CA:           certificateAuthority(certs),
+		PublishPorts: portPolicy,
+		NodeVars:     nodeCfg.Variables,
+		OIDC:         provider, Sessions: users,
 		Metrics: metrics, EdgeMetrics: edgeExposition,
 		Invoker: invoker,
 		Usage:   volumeUsage, VolumeDir: volumes,
@@ -990,6 +1018,19 @@ func runAgent(args []string) error {
 			logger.Debug("image auto-update stopped", "error", err)
 		}
 	}()
+	// The image GC sweep (§5.2.4, v1.111), best-effort like the watcher
+	// above. A refused collector still serves the images API's read half;
+	// the reason is logged once here so a node that never collects says why.
+	if reason := imageGC.Refusal(); reason != "" {
+		logger.Info("image gc will not sweep", "reason", reason)
+	} else {
+		logger.Info("image gc sweeping", "interval", imageGC.Interval())
+		go func() {
+			if err := imageGC.Run(ctx); err != nil {
+				logger.Debug("image gc stopped", "error", err)
+			}
+		}()
+	}
 	startMetrics(ctx, metricsSettings{
 		metrics:       metrics,
 		exposition:    edgeExposition,
@@ -1374,6 +1415,39 @@ func fanOut(ctx context.Context, in <-chan struct{}, out ...chan<- struct{}) {
 // "always" is refused as a node default here as it is in the stanza: it means
 // per-service auto-update (R19), and turning that on for every service on a
 // node is not a default anybody asked for.
+// resolveImageGC decides whether the image GC sweeps (PRD §5.2.4, v1.111).
+// v1.51's precedence: --image-gc wins and says so, the gc block's enabled
+// otherwise, and on when neither says anything - the one default in this
+// family whose absence is not off, because a disk that fills silently is
+// exactly the surprise §5.2.4 forbids. The tuning knobs (interval, min_age,
+// keep) are file-only and travel separately.
+func resolveImageGC(flag string, fromFile *nodeconfig.ImageGCConfig, configPath string,
+	logger *slog.Logger,
+) (disabled bool, err error) {
+	fileSaysSomething := fromFile != nil
+	switch flag {
+	case "":
+		if fileSaysSomething && fromFile.Disabled {
+			logger.Info("image gc disabled by server config", "config", configPath)
+		}
+		return fileSaysSomething && fromFile.Disabled, nil
+	case "off":
+		if fileSaysSomething && !fromFile.Disabled {
+			logger.Info("server config images gc block is not consulted for on/off (--image-gc wins)",
+				"config", configPath)
+		}
+		return true, nil
+	case "on":
+		if fileSaysSomething && fromFile.Disabled {
+			logger.Info("server config images gc block is not consulted for on/off (--image-gc wins)",
+				"config", configPath)
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("--image-gc %q is not a mode; it must be \"on\" or \"off\"", flag)
+	}
+}
+
 func resolveNodePullPolicy(flag, fromFile, configPath string, logger *slog.Logger) (string, error) {
 	switch flag {
 	case "":

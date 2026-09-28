@@ -57,6 +57,7 @@ var commands = []command{
 	{"scale", "manually scale a service", runScale},
 	{"build", "trigger a build pipeline", runBuild},
 	{"functions", "wasm functions: list (triggers, invocation rate, status)", runFunctions},
+	{"images", "the node's containerd images: size, age, in-use; --clean removes unused ones", runImages},
 	{"project", "project operations: sync, builds, remove", runProject},
 	{"backup", "backup create|list|verify", runBackup},
 	{"restore", "restore state from a snapshot", runRestore},

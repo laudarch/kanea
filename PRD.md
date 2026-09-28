@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | Adopted v1.110 |
+| **Status** | Adopted v1.111 |
 | **Author** | Michael K. Essandoh (<michael@essandoh.dev>) |
-| **Last updated** | 2026-09-28 (v1.110) |
+| **Last updated** | 2026-09-28 (v1.111) |
 | **Document type** | Product Requirements Document (PRD) |
 
 > **v1.1 amendments**: incorporates the engineering review (performance/reliability/security): edge proxy split into `kanea-edge` (§5.2.6), Store-level CDC replication + master-key escrow (§15.3), upgrade & migration framework (§15.4), workload hardening defaults + CSRF/CSWSH/OIDC hardening (§14), ACME wildcard-default policy (§7.3), metrics pipeline redesign (§9.1), storm controls (§4.3, §11), realistic RTO targets (§15.3, §21), total-platform footprint budget (§21).
@@ -12,6 +12,8 @@
 > **v1.2 amendments**: adds the **MCP server** (first-class AI-agent interface: §5.2.1, §13.3, §16.3, M9→M10 renumbering) and **edge middleware** on the `expose` block; IP restriction, rate limiting, header manipulation (§5.2.6, §6.1, §7.2, M3).
 
 > **v1.3 amendments**: **image-only deployment** is explicit as the minimal, first-class path (G14, §6.2 R8, CLI quick-run) and adds **service references & dependencies**: `${service.<name>.host}` / `${service.<name>.port.*}` interpolation, `depends_on`, topological health-gated starts, cycle rejection (§6.2 R9-R10, §7.1.1, §4.3).
+
+> **v1.111 amendments**: **the node collects its own unused images** (§5.2.4, §15.1, §16.1, §16.2). §5.2.4 has owed "image GC (keep-last-N in use)" since the disk-hygiene paragraph was written, and nothing ever built it: no code path on a node deletes a containerd image, so every deploy, auto-update pin and rollback leaves its predecessor behind until the disk fills - the one failure §5.2.4 says must never surprise the control plane. Now `kanead` runs a collector (`internal/imagegc`, the R19 watcher's loop shape with the internal registry's sweep doctrine): every `interval` it sweeps each `kanea-*` containerd namespace and deletes an image only when **three rules all agree it is garbage**. It is not in the **in-use set** - the union, over every service record and every alloc record, of the declared `image`, the pinned digest, the rollback target, every init step's image, and the image every live alloc actually runs (allocs lag the desired state mid-roll, so both sides are consulted); the union is global across projects, deliberately conservative, and every reference is **normalised before comparison**, because the store says `nginx:1.27` where containerd says `docker.io/library/nginx:1.27`, and an unnormalised comparison is a silent mass deletion. It is **older than `min_age`** by its pull time in that namespace, which is also the guard against the race where a pull lands before the alloc record that references it (the registry sweep's upload-expiry guard, again). And it is **not among the newest `keep` images of an in-use repository** - that is the "keep-last-N in use" §5.2.4 asked for, rollback material for the repositories current specs actually name; a repository nothing references (a deleted project's, typically) gets no keep-N and collects fully, or it never would. **Defaults: on, `interval = "12h"`, `min_age = "48h"`, `keep = 2`**, tuned or disabled by a `gc` block inside §15.1's existing `images` stanza (floors refused by name at parse: 10m, 1h, 0), with `--image-gc off` as the flag half under v1.51's precedence. **One hard refusal**: a node whose effective default pull policy is `never` never collects - preloaded images cannot be re-pulled, so deletion there is unrecoverable, and the collector refuses rather than trusts its own carve-outs (the clobber-check doctrine); a *service-level* `never` needs no case, its images being in the in-use set by construction. Deletion is synchronous (`SynchronousDelete`), so containerd's own GC reaps the blobs and snapshots; a sweep failure is a log line, never fatal, and steady state logs nothing. The surface: `GET /v1/images` (per-project images with size and in-use), `POST /v1/images/gc` (admin, audited; runs one sweep now, and answers 409 naming the reason on a refused or disabled collector), and `kanea images` / `kanea images --clean` over them, both with `--json`. Stated non-scope: the rootless buildkitd content store (§10.2) keeps its own cache cap and is still not covered by this collector; disk-watermark alerts stay owed by §5.2.4; MCP and dashboard surfaces for images are follow-ups; containerd namespaces themselves are never deleted, images only.
 
 > **v1.110 amendments**: **an apply re-arms the auto-update poll** (§6.2 R19, §16.1). Re-pushing an image under the tag a service already follows had no prompt path onto the node: the R19 poll answers on `update.interval` (default 6 h), and a `kanea apply` of the unchanged spec did nothing at all, because the apply handler carried the watcher's whole state forward - the pinned digest, the rollback target, the in-flight timestamp, *and the check clock*. The first three are still carried, for v1.32's stated reason (an apply that reset the pin would redeploy the service on every `kanea apply`), but `ImageCheckedAt` no longer is: an apply is the operator saying *make it so*, and the freshest answer for the tag is part of that, so the watcher's next sweep (bounded by its own tick, one minute) re-resolves the tag and a moved digest pins and rolls through the ordinary R19 machinery - `max_parallel`, `min_healthy`, the health check, the revert deadline, all unchanged. Three boundaries. **R33's refusal stands**: this is not a per-create re-pull, the driver still never sees `always`, and two replicas of one spec hash still cannot run different bytes; a service without `update.auto` is untouched, and the answer for "apply must pick up my re-pushed tag" remains `pull_policy = "always"` (or `update { auto = true }`) plus an apply. **The GitOps sync loop cannot turn this into a poll-per-sync**: a sync is `last_commit`-gated (§10.1), so an unchanged remote never reaches the apply handler, and a changed one was going to poll-worthy work anyway. And **a reverted update's parked check clock is re-armed by an explicit apply, deliberately**: the park exists so an unattended watcher does not re-pin a broken digest a minute after reverting it, and an apply is exactly the attended case it defers to.
 
@@ -407,7 +409,7 @@ Job spec (HCL) ──parse/validate──▶ Desired state (Store)
 - Responsibilities: image pull (with auth from secrets store; digest pinning supported; **where an image may come from is R33's `pull_policy`**, resolved on the node), container/task lifecycle, per-alloc network namespace setup (attached by the datapath, §5.2.5), cgroup metrics sampling, stdout/stderr capture (§17).
 - **An alloc may be more than one container, sequentially** (v1.84, §6.2 R32). An `init` block becomes a container of its own - its own image, cgroup, log file and containerd id (`<alloc>.init.<n>.<name>`, a namespace disjoint from alloc ids by construction, since an alloc id can contain no dot) - that **joins the alloc's** network namespace, volumes and secrets tmpfs and runs to completion before the task is created. Containers carry a `kanea.role` label (absent means the alloc's own task, which is what every container created before v1.84 is) so that listing a project's containers cannot mistake a running migration for an orphaned alloc. The driver gains no verb for this: the reconciler polls the listing it already performs and never blocks on a step.
 - **Kanea installs containerd itself** at the version its manifest pins (§5.2.12), under its own prefix and on its own socket, and supervises it with a unit it wrote. A containerd already on the node is left alone: it is another program's, and replacing its socket would make installing Kanea an act that breaks other software. `--containerd external` adopts an existing daemon instead, for the operator who wants one runtime on the box; that is the only configuration in which Kanea depends on a containerd whose version it did not choose, so it is the only one that has to be asked for.
-- **Node disk hygiene:** image GC (keep-last-N in use), **build cache caps across all three content stores** (containerd's, the rootless `buildkitd` user's `$HOME/.local/share/buildkit` (§10.2), and the internal registry's `<data-dir>/registry` (§5.2.14, v1.109)) per-service log caps (§17); disk watermark alerts at 80%/90% (event + notification). One disk holds images, logs, state, and volumes: pressure must never surprise the control plane.
+- **Node disk hygiene:** image GC (keep-last-N in use; **built in v1.111**: `internal/imagegc` sweeps every `kanea-*` namespace on `interval`, deleting only what is unreferenced by any service or alloc record, older than `min_age`, and outside the newest `keep` of an in-use repository - configured by §15.1's `images { gc { } }` block, refused entirely on a node whose default pull policy is `never`), **build cache caps across all three content stores** (containerd's, the rootless `buildkitd` user's `$HOME/.local/share/buildkit` (§10.2), and the internal registry's `<data-dir>/registry` (§5.2.14, v1.109)) per-service log caps (§17); disk watermark alerts at 80%/90% (event + notification; still owed). One disk holds images, logs, state, and volumes: pressure must never surprise the control plane.
 
 #### 5.2.5 Network driver (internal eBPF datapath)
 - The datapath is Kanea's own (v1.36): three small eBPF programs, a handful of pinned maps and plain netlink plumbing, all loaded and written by `kanead` from one compiled-in object (`internal/datapath`). There is no network agent, no kvstore and no CNI: the platform that allocates every address is the program that writes the kernel's maps with them. The Cilium integration this replaces is recorded in the v1.5-v1.35 amendments and in [spike ① report](./spikes/cilium-standalone/REPORT.md), which stays as the history of why those versions look the way they do.
@@ -1382,6 +1384,18 @@ variables {
 # exist). A spec's own task.pull_policy / init.pull_policy wins over both.
 images {
   pull_policy = "if-not-present"        # "if-not-present" | "never" | "always"
+
+  # Image GC (§5.2.4, v1.111). On by default; the block tunes or disables it.
+  # An image is deleted only when it is unreferenced by every service and
+  # alloc record, older than min_age, and outside the newest `keep` of a
+  # repository something still references. A node whose default pull_policy
+  # is "never" refuses to collect at all: preloaded images cannot come back.
+  gc {
+    enabled  = true
+    interval = "12h"                    # floor 10m
+    min_age  = "48h"                    # floor 1h
+    keep     = 2                        # newest N per in-use repository
+  }
 }
 
 bind {
@@ -1661,6 +1675,8 @@ GET    /api/v1/audit
 GET    /api/v1/upgrade                         # running vs latest release (admin; resolved on demand, cached ~1h; v1.107)
 POST   /api/v1/upgrade                         # fetch + verify + install + restart both daemons (admin; no downgrade; v1.107)
 GET    /api/v1/updates                         # OS + component view: pending packages, reboot flag, §5.2.12 matrix (admin; local reads only, never installs; v1.108)
+GET    /api/v1/images                          # per-project containerd images: ref, digest, size, age, in-use (v1.111)
+POST   /api/v1/images/gc                       # run one GC sweep now (admin, audited; 409 names why on a refused/disabled collector; v1.111)
 GET    /api/v1/secrets                         # metadata only: paths, timestamps, source, never values (§13.3)
 PUT    /api/v1/secrets/{path}                  # write-only; no GET-one route exists, by construction
 DELETE /api/v1/secrets/{path}
@@ -1713,6 +1729,7 @@ kanea exec shop/web -- sh  # debug shell into an alloc
 kanea scale shop/web 5
 kanea build shop/web       # trigger pipeline
 kanea functions list       # wasm functions: triggers, invocation rate, status (v1.39)
+kanea images [--clean]     # the node's containerd images: size, age, in-use; --clean runs one GC sweep now (v1.111)
 kanea project sync shop
 kanea project remove shop  # delete every service and the project's pipeline/notification config (alias: rm); asks [y/N] on a TTY, --yes/-y skips (v1.104)
 kanea backup create|list|verify

@@ -18,6 +18,7 @@ import (
 	"github.com/m18h/kanea/internal/auth"
 	"github.com/m18h/kanea/internal/backup"
 	"github.com/m18h/kanea/internal/gitops"
+	"github.com/m18h/kanea/internal/imagegc"
 	"github.com/m18h/kanea/internal/jobspec"
 	"github.com/m18h/kanea/internal/notify"
 	"github.com/m18h/kanea/internal/reconciler"
@@ -120,6 +121,21 @@ func (c *Client) Functions(ctx context.Context) (FunctionsResponse, error) {
 func (c *Client) Volumes(ctx context.Context) (VolumesResponse, error) {
 	var out VolumesResponse
 	err := c.do(ctx, http.MethodGet, PathVolumes, nil, &out)
+	return out, err
+}
+
+// Images lists the node's containerd images with the collector's in-use
+// verdict (PRD v1.111).
+func (c *Client) Images(ctx context.Context) (ImagesResponse, error) {
+	var out ImagesResponse
+	err := c.do(ctx, http.MethodGet, PathImages, nil, &out)
+	return out, err
+}
+
+// ImagesClean runs one image GC sweep now (PRD v1.111).
+func (c *Client) ImagesClean(ctx context.Context) (imagegc.Summary, error) {
+	var out imagegc.Summary
+	err := c.do(ctx, http.MethodPost, PathImagesGC, nil, &out)
 	return out, err
 }
 

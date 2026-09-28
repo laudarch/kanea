@@ -57,6 +57,15 @@ jobs:
       # rejects, and ":latest" makes "the service changed" and "we changed"
       # indistinguishable on the morning it starts failing.
       #
+      # The image is Chainguard's source build of MinIO, because MinIO's own
+      # are gone: Docker Hub's minio/minio was delisted in late 2025 and
+      # quay.io/minio/minio revoked anonymous pulls in September 2026, which
+      # is how the previous pin started answering 401 for every run. Same
+      # server, same env, same `server /data` command; only the builder
+      # changed. Chainguard's free tier tags only :latest, so this digest is
+      # how the pin stays a pin - and when it eventually goes stale upstream,
+      # this job failing at "Start MinIO" (not in a test) is the signature.
+      #
       # MINIO_DOMAIN is what enables virtual-hosted addressing below.
       - name: Start MinIO
         run: |
@@ -64,7 +73,7 @@ jobs:
             -e MINIO_ROOT_USER=kaneatest \
             -e MINIO_ROOT_PASSWORD=kaneatestsecret \
             -e MINIO_DOMAIN=localhost \
-            quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            cgr.dev/chainguard/minio@sha256:6a1d0b45c8669726bba580ced0bfa4cb9fdeed1ed636dfabd81d1577beb6937b \
             server /data
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then

@@ -9,9 +9,9 @@ export type ChartScale = 'percent' | 'auto'
 
 export interface ChartTheme {
   /** stroke per tone, matching the Sparkline's text-chart-1..4 mapping. */
-  stroke: Record<1 | 2 | 3 | 4, string>
+  stroke: Record<1 | 2 | 3 | 4 | 5, string>
   /** translucent fill per tone, for the area under the line. */
-  fill: Record<1 | 2 | 3 | 4, string>
+  fill: Record<1 | 2 | 3 | 4 | 5, string>
   grid: string
   axis: string
 }
@@ -27,10 +27,10 @@ function cssVar(name: string): string {
  * than caching across one.
  */
 export function chartColors(): ChartTheme {
-  const tone = (n: 1 | 2 | 3 | 4) => cssVar(`--chart-${n}`)
+  const tone = (n: 1 | 2 | 3 | 4 | 5) => cssVar(`--chart-${n}`)
   const stroke = {} as ChartTheme['stroke']
   const fill = {} as ChartTheme['fill']
-  for (const n of [1, 2, 3, 4] as const) {
+  for (const n of [1, 2, 3, 4, 5] as const) {
     const v = tone(n)
     stroke[n] = `hsl(${v})`
     fill[n] = `hsl(${v} / 0.12)`
@@ -111,7 +111,7 @@ export function paddedRange(max: number): [number, number] {
 export interface ChartOptions {
   width: number
   height: number
-  tone: 1 | 2 | 3 | 4
+  tone: 1 | 2 | 3 | 4 | 5
   scale: ChartScale
   theme: ChartTheme
   /** formatValue renders the y value in the axis and cursor readout. */

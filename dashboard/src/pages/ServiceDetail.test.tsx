@@ -137,10 +137,11 @@ describe('ServiceDetail', () => {
     })
 
     const heading = screen.getByRole('heading', { level: 1 })
-    expect(heading.textContent).toBe('shop/web')
-    // Scoped to the header, because the image also appears in the spec panel
-    // below: the title carries identity and the subtitle beside it carries
-    // facts, which is the split this change preserves.
+    // The heading starts with the full name; the status pill rides inside it
+    // (v2), so equality would couple this to whatever the pill says.
+    expect(heading.textContent?.startsWith('shop/web')).toBe(true)
+    // Scoped to the header block, because the image also appears in the Spec
+    // tab: the title carries identity, the subtitle carries facts.
     expect(heading.parentElement?.textContent).toContain('nginx:1.27')
   })
 
@@ -162,6 +163,7 @@ describe('ServiceDetail', () => {
       ],
     })
 
+    fireEvent.click(screen.getByRole('tab', { name: 'Spec' }))
     const edit = screen.getByRole('button', { name: 'Edit spec inline' })
     expect((edit as HTMLButtonElement).disabled).toBe(true)
     expect(edit.getAttribute('title')).toBe('Requires the admin role')
@@ -199,6 +201,7 @@ describe('ServiceDetail', () => {
         { id: 'shop-web-1', project: 'shop', service: 'web', index: 1, state: 'running' },
       ],
     })
+    fireEvent.click(screen.getByRole('tab', { name: 'Logs' }))
     deliver(
       'logs',
       {

@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Link } from '@/lib/router'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
@@ -10,8 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table'
 import { TableSkeleton } from '@/components/Skeletons'
 import { PageHeader } from '@/components/PageHeader'
+import { OverflowMenu, overflowItem } from '@/components/OverflowMenu'
 import { SortHeader } from '@/components/SortHeader'
-import { StatTile } from '@/components/StatTile'
 import { StatusDot, type StatusTone } from '@/components/StatusDot'
 import { PaginationControls } from '@/components/Pagination'
 import { usePagination } from '@/hooks/usePagination'
@@ -63,7 +61,6 @@ export function Projects() {
   const client = useQueryClient()
   const { session, csrf } = useSession()
   const [query, setQuery] = useState('')
-  const [open, setOpen] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
   const sort = useSort<SortKey>()
 
@@ -110,8 +107,6 @@ export function Projects() {
   const filtered = list.filter((p) => matchesQuery(query, p.name, p.git?.url))
   const sorted = sortItems(filtered, sort, {
     project: (p) => p.name,
-    services: (p) => p.services,
-    allocs: (p) => p.allocs,
     // Ascending health reads problems-first: the reader clicking it wants what
     // is wrong, not the alphabet.
     health: (p) => healthRank[health(p).word],
@@ -119,36 +114,38 @@ export function Projects() {
   const pager = usePagination(sorted, { resetKey: `${query} ${sort.key ?? ''} ${sort.dir}` })
 
   const canWrite = session?.role === 'admin'
-  const gitBacked = list.filter((p) => p.git).length
   const running = list.reduce((sum, p) => sum + p.running, 0)
   const declared = list.reduce((sum, p) => sum + p.allocs, 0)
+  // The worst-off project carries the header's attention note, worded like
+  // the mockup: "shop is degraded", not a number.
+  const worst = [...list].sort((a, b) => healthRank[health(a).word]! - healthRank[health(b).word]!)[0]
+  const worstState = worst ? health(worst) : null
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Projects"
-        subtitle={`${list.length} project${list.length === 1 ? '' : 's'} · ${list.reduce((n, p) => n + p.services, 0)} services`}
+        subtitle={
+          <>
+            <span>
+              {list.length} project{list.length === 1 ? '' : 's'} ·{' '}
+              {list.reduce((n, p) => n + p.services, 0)} services · {running} of {declared}{' '}
+              allocations running
+            </span>
+            {worst && worstState && (worstState.word === 'degraded' || worstState.word === 'down') ? (
+              <span className="flex items-center gap-1.5 text-status-warn">
+                <StatusDot tone={worstState.tone} />
+                {worst.name} is {worstState.word}
+              </span>
+            ) : null}
+          </>
+        }
         actions={
           <Link to="/services/new">
             <Button className="font-semibold">Deploy service</Button>
           </Link>
         }
       />
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <StatTile label="Projects" value={list.length} sub="namespaces in use" />
-        <StatTile
-          label="Git-backed"
-          value={`${gitBacked}/${list.length}`}
-          sub={gitBacked > 0 ? 'polled, and webhook-marked' : 'all deployed by pushing specs'}
-        />
-        <StatTile
-          label="Allocs running"
-          value={`${running}/${declared}`}
-          tone={declared > 0 && running === declared ? 'ok' : declared > 0 ? 'error' : 'default'}
-          sub="across every project"
-        />
-      </div>
 
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
@@ -186,23 +183,17 @@ export function Projects() {
                     <SortHeader sort={sort} sortKey="project" className="pt-2">
                       Project
                     </SortHeader>
-                    <SortHeader sort={sort} sortKey="services" className="pt-2">
-                      Services
-                    </SortHeader>
-                    <SortHeader sort={sort} sortKey="allocs" className="pt-2">
-                      Allocs
-                    </SortHeader>
+                    <TH className="pt-2">Services</TH>
                     <SortHeader sort={sort} sortKey="health" className="pt-2">
                       Health
                     </SortHeader>
-                    <TH className="pt-2">Git</TH>
-                    <TH className="pt-2">Notifications</TH>
-                    <TH className="pt-2 text-right">Actions</TH>
+                    <TH className="pt-2">Source</TH>
+                    <TH className="pt-2 text-right" aria-label="Actions" />
                   </tr>
                 </THead>
                 <TBody>
                   {pager.pageItems.map((project) => (
-                    <ProjectRows
+                    <ProjectRow
                       key={project.name}
                       project={project}
                       services={(services.data?.services ?? []).filter(
@@ -210,10 +201,6 @@ export function Projects() {
                       )}
                       servicesKnown={services.data !== null}
                       allocs={allocs.data?.allocs ?? []}
-                      open={open[project.name] ?? false}
-                      onToggle={() =>
-                        setOpen((o) => ({ ...o, [project.name]: !o[project.name] }))
-                      }
                       canWrite={canWrite}
                       syncing={sync.isPending && sync.variables === project.name}
                       onSync={() => sync.mutate(project.name)}
@@ -324,7 +311,7 @@ function RemoveProjectDialog({
   )
 }
 
-type SortKey = 'project' | 'services' | 'allocs' | 'health'
+type SortKey = 'project' | 'health'
 
 /** Ascending health sort reads problems-first. */
 const healthRank: Record<string, number> = { down: 0, degraded: 1, running: 2, stopped: 3, empty: 4 }
@@ -344,14 +331,14 @@ function health(project: ProjectSummary): { tone: StatusTone; word: string } {
   return { tone: 'warn', word: 'degraded' }
 }
 
-/** ProjectRows is the project row plus, when expanded, its services. */
-function ProjectRows({
+/** ProjectRow is one project: name, its services as live chips, health,
+ * where its specs come from, and the verbs (Sync visible, the rest folded
+ * behind the mockup's ⋯). */
+function ProjectRow({
   project,
   services,
   servicesKnown,
   allocs,
-  open,
-  onToggle,
   canWrite,
   syncing,
   onSync,
@@ -363,8 +350,6 @@ function ProjectRows({
   services: Service[]
   servicesKnown: boolean
   allocs: Alloc[]
-  open: boolean
-  onToggle: () => void
   canWrite: boolean
   syncing: boolean
   onSync: () => void
@@ -386,150 +371,119 @@ function ProjectRows({
   }, [confirmStop])
 
   return (
-    <>
-      <TR>
-        <TD>
-          <button
-            type="button"
-            onClick={onToggle}
-            aria-expanded={open}
-            className="group flex items-center gap-1.5 text-left"
-          >
-            {open ? (
-              <ChevronDown size={14} className="shrink-0 text-muted-foreground" aria-hidden />
-            ) : (
-              <ChevronRight size={14} className="shrink-0 text-muted-foreground" aria-hidden />
-            )}
-            <span className="font-medium group-hover:underline">{project.name}</span>
-          </button>
-        </TD>
-        <TD className="font-mono tabular-nums">{project.services}</TD>
-        <TD className="font-mono tabular-nums">
-          {project.running}/{project.allocs}
-        </TD>
-        <TD>
-          <StatusDot tone={state.tone} label={state.word} />
-        </TD>
-        <TD>
-          <GitCell project={project} />
-        </TD>
-        <TD>
-          {project.notifications && project.notifications.length > 0 ? (
-            <div className="flex flex-wrap gap-1">
-              {project.notifications.map((channel) => (
-                <Badge key={channel} variant="muted" className="font-mono text-[11px]">
-                  {channel}
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <span className="font-mono text-xs text-muted-foreground">-</span>
-          )}
-        </TD>
-        <TD className="text-right">
-          <div className="flex justify-end gap-1.5">
-            {project.git ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-xs"
-                disabled={!canWrite || syncing}
-                title={canWrite ? undefined : 'Requires the admin role'}
-                onClick={onSync}
-              >
-                {syncing ? 'Syncing…' : 'Sync now'}
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="outline"
-              className={`h-7 px-2 text-xs ${confirmStop ? 'border-destructive text-destructive hover:bg-destructive/10' : ''}`}
-              disabled={!canWrite || stopping || project.services === 0}
-              title={
-                canWrite
-                  ? 'Scale every service in the project to zero'
-                  : 'Requires the admin role'
-              }
-              onClick={() => {
-                if (!confirmStop) {
-                  setConfirmStop(true)
-                  return
-                }
-                setConfirmStop(false)
-                onStop()
-              }}
-            >
-              {stopping ? 'Stopping…' : confirmStop ? 'Confirm stop?' : 'Stop'}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-xs"
-              disabled={!canWrite}
-              title={
-                canWrite
-                  ? 'Delete every service and the project config; volume data is kept'
-                  : 'Requires the admin role'
-              }
-              onClick={onRemove}
-            >
-              Remove
-            </Button>
+    <TR>
+      <TD className="font-medium">{project.name}</TD>
+      <TD>
+        {/* Every service as a live chip: name, ready count, its own dot.
+            This is what the old expander row showed, now visible without a
+            click - a project's contents are the point of the page. */}
+        {!servicesKnown ? (
+          <span className="text-xs text-muted-foreground">…</span>
+        ) : services.length === 0 ? (
+          <span className="font-mono text-xs text-muted-foreground">none yet</span>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {services.map((svc) => {
+              const own = byService.get(`${svc.Project}/${svc.Service}`) ?? []
+              const tone = serviceStatusTone(serviceHealth(svc, own))
+              return (
+                <Link
+                  key={svc.Service}
+                  to={`/services/${svc.Project}/${svc.Service}`}
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-0.5 font-mono text-xs transition-colors hover:bg-muted"
+                >
+                  <StatusDot tone={tone.tone} />
+                  {svc.Service}
+                  <span className="tabular-nums text-muted-foreground">
+                    {own.filter((a) => a.state === 'running').length}/{svc.Count}
+                  </span>
+                </Link>
+              )
+            })}
           </div>
-        </TD>
-      </TR>
-
-      {open ? (
-        <TR className="bg-muted/20">
-          <TD colSpan={7} className="pl-9">
-            {!servicesKnown ? (
-              <span className="text-xs text-muted-foreground">Waiting for the service list…</span>
-            ) : services.length === 0 ? (
-              <span className="text-xs text-muted-foreground">
-                No services yet: a git-backed project between its first apply and its first
-                successful sync looks exactly like this.
-              </span>
-            ) : (
-              <div className="flex flex-wrap gap-x-6 gap-y-2 py-1">
-                {services.map((svc) => {
-                  const own = byService.get(`${svc.Project}/${svc.Service}`) ?? []
-                  const tone = serviceStatusTone(serviceHealth(svc, own))
-                  return (
-                    <Link
-                      key={svc.Service}
-                      to={`/services/${svc.Project}/${svc.Service}`}
-                      className="group flex items-center gap-2 text-sm"
-                    >
-                      <StatusDot tone={tone.tone} />
-                      <span className="group-hover:underline">{svc.Service}</span>
-                      <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                        {own.filter((a) => a.state === 'running').length}/{svc.Count}
-                      </span>
-                    </Link>
-                  )
-                })}
-              </div>
+        )}
+      </TD>
+      <TD>
+        <StatusDot tone={state.tone} label={state.word} />
+      </TD>
+      <TD>
+        <SourceCell project={project} />
+      </TD>
+      <TD className="text-right">
+        <div className="flex items-center justify-end gap-1.5">
+          {project.git ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2.5 text-xs"
+              disabled={!canWrite || syncing}
+              title={canWrite ? undefined : 'Requires the admin role'}
+              onClick={onSync}
+            >
+              {syncing ? 'Syncing…' : 'Sync'}
+            </Button>
+          ) : null}
+          <OverflowMenu label={`Actions for ${project.name}`}>
+            {(close) => (
+              <>
+                <button
+                  type="button"
+                  className={overflowItem + (confirmStop ? ' text-destructive' : '')}
+                  disabled={!canWrite || stopping || project.services === 0}
+                  title={
+                    canWrite
+                      ? 'Scale every service in the project to zero'
+                      : 'Requires the admin role'
+                  }
+                  onClick={() => {
+                    if (!confirmStop) {
+                      setConfirmStop(true)
+                      return
+                    }
+                    setConfirmStop(false)
+                    close()
+                    onStop()
+                  }}
+                >
+                  {stopping ? 'Stopping…' : confirmStop ? 'Confirm stop?' : 'Stop'}
+                </button>
+                <button
+                  type="button"
+                  className={overflowItem}
+                  disabled={!canWrite}
+                  title={
+                    canWrite
+                      ? 'Delete every service and the project config; volume data is kept'
+                      : 'Requires the admin role'
+                  }
+                  onClick={() => {
+                    close()
+                    onRemove()
+                  }}
+                >
+                  Remove
+                </button>
+              </>
             )}
-          </TD>
-        </TR>
-      ) : null}
-    </>
+          </OverflowMenu>
+        </div>
+      </TD>
+    </TR>
   )
 }
 
-/** GitCell reports where a project's spec comes from, and when it last did. */
-function GitCell({ project }: { project: ProjectSummary }) {
+
+/** SourceCell reports where a project's spec comes from, the mockup's short
+ * form: "git · main" over commit-and-age, with the full URL on the title. */
+function SourceCell({ project }: { project: ProjectSummary }) {
   const git = project.git
   if (!git) {
     return <span className="font-mono text-xs text-muted-foreground">pushed specs</span>
   }
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" title={git.url}>
       {/* A repository URL comes from an operator's config and renders as text. */}
-      <span className="block truncate font-mono text-xs">
-        {git.url}
-        {git.branch ? `#${git.branch}` : ''}
-      </span>
+      <span className="block font-mono text-xs">git · {git.branch || 'HEAD'}</span>
       <span className="block font-mono text-[11px] text-muted-foreground">
         {git.last_commit ? git.last_commit.slice(0, 7) : 'never synced'}
         {git.last_sync_at ? ` · ${relativeAge(git.last_sync_at)} ago` : ''}

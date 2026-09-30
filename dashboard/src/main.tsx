@@ -2,6 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App } from '@/App'
+// The design system's two faces, self-hosted (nothing from a CDN): Space
+// Grotesk for UI, JetBrains Mono for what a machine wrote.
+import '@fontsource-variable/space-grotesk'
+import '@fontsource-variable/jetbrains-mono'
 import '@/index.css'
 
 const queryClient = new QueryClient({

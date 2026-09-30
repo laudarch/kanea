@@ -96,7 +96,9 @@ describe('App', () => {
     // The role is on screen because a viewer who does not know they are one
     // reads every missing button as a broken dashboard.
     expect(await screen.findByText(/ada/)).toBeDefined()
-    expect(screen.getByText(/admin/)).toBeDefined()
+    // The user card folds the socket into the role line (v2): with the test
+    // socket never opening, it reads reconnecting rather than a role.
+    expect(screen.getByText(/reconnecting/)).toBeDefined()
     expect(screen.getByLabelText('Sign out')).toBeDefined()
     expect(screen.queryByLabelText('Password')).toBeNull()
   })

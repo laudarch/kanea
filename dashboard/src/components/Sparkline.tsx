@@ -13,9 +13,9 @@ export interface SparklineProps {
   label?: string | undefined
   /** unit rides the hover readout ("%", "/s", " ms"). */
   unit?: string | undefined
-  /** tone picks the series colour: 1 amber, 2 blue, 3 green, 4 red. Identity
+  /** tone picks the series colour: 1 amber, 2 blue, 3 green, 4 red, 5 purple. Identity
    * never rides on the hue alone: every sparkline sits under its own label. */
-  tone?: 1 | 2 | 3 | 4 | undefined
+  tone?: 1 | 2 | 3 | 4 | 5 | undefined
   /**
    * status explains an empty series, consulted only when there is nothing to
    * draw. The copy is shorter than the chart panel's because this lives in a
@@ -32,6 +32,7 @@ const toneClass = {
   2: 'text-chart-2',
   3: 'text-chart-3',
   4: 'text-chart-4',
+  5: 'text-chart-5',
 } as const
 
 /** The plot keeps this much air above the line and beside the end dot, so the

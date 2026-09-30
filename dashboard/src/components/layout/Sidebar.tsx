@@ -29,28 +29,27 @@ import { useTheme } from '@/hooks/useTheme'
 import { useUpdateAttention } from '@/hooks/useUpdates'
 import { DisplaySettings } from '@/components/layout/DisplaySettings'
 
-/** Sidebar is the shell's left rail: brand, nav, connection facts, user. */
+/** Sidebar is the shell's left rail: brand, nav, the node's updates, user. */
 export function Sidebar({ className }: { className?: string | undefined }) {
-  const counts = useNavCounts()
-  const attention = useUpdateAttention()
+  const attention = useNavCounts()
+  const updates = useUpdateAttention()
   const health = useQuery({
     queryKey: ['health'],
     queryFn: ({ signal }) => fetchHealth(signal),
     refetchInterval: 10_000,
   })
 
-  const nav: { to: string; label: string; icon: LucideIcon; exact: boolean; badge?: number | undefined }[] = [
+  const nav: { to: string; label: string; icon: LucideIcon; exact: boolean; dot?: boolean | undefined }[] = [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
     { to: '/projects', label: 'Projects', icon: FolderTree, exact: false },
-    { to: '/services', label: 'Services', icon: Boxes, exact: false, badge: counts.services },
-    { to: '/pipelines', label: 'Pipelines', icon: GitBranch, exact: false, badge: counts.buildsRunning },
-    { to: '/functions', label: 'Functions', icon: FunctionSquare, exact: false, badge: counts.functions },
-    // Projects and Storage carry no badge on purpose: each would cost the
-    // sidebar a poll of its own on every page (a project list walks services,
-    // allocs and pipeline configs), and neither number is one an operator is
-    // waiting for the way a running build or a new alert is.
+    { to: '/services', label: 'Services', icon: Boxes, exact: false, dot: attention.services },
+    { to: '/pipelines', label: 'Pipelines', icon: GitBranch, exact: false, dot: attention.pipelines },
+    { to: '/functions', label: 'Functions', icon: FunctionSquare, exact: false },
+    // Storage carries no dot on purpose: it would cost the sidebar a volume
+    // poll of its own on every page, and a breached budget already surfaces
+    // through Events, which does have one.
     { to: '/storage', label: 'Storage', icon: HardDrive, exact: false },
-    { to: '/events', label: 'Events', icon: Activity, exact: false, badge: counts.alerts },
+    { to: '/events', label: 'Events', icon: Activity, exact: false, dot: attention.events },
     { to: '/backups', label: 'Backups', icon: DatabaseBackup, exact: false },
     { to: '/settings', label: 'Settings', icon: Settings2, exact: false },
   ]
@@ -66,8 +65,6 @@ export function Sidebar({ className }: { className?: string | undefined }) {
         <Mark size={22} />
         <span className="text-base font-semibold tracking-tight">kanea</span>
         {health.data?.version ? (
-          // Plain text again since v1.108: the Updates page is the control,
-          // and the pinned nav item below carries the attention badge.
           <span className="ml-auto font-mono text-[11px] text-muted-foreground">
             {`v${health.data.version.replace(/^v/, '')}`}
           </span>
@@ -81,18 +78,23 @@ export function Sidebar({ className }: { className?: string | undefined }) {
         ))}
       </nav>
 
-      {/* Updates sits apart from the pages above it (PRD v1.108): those are
-          the workloads, this is the node itself. Its badge is amber, not the
-          muted count the others carry, because it counts actions waiting
-          rather than things existing. */}
-      <nav className="mt-auto flex flex-col px-2 pb-1">
-        <NavItem to="/updates" label="Updates" icon={RefreshCw} exact={false} badge={attention} alert />
-      </nav>
-
-      <div className="border-t border-sidebar-border px-4 py-3">
-        <SocketLine />
+      {/* The node's own updates sit apart from the pages above (PRD v1.108):
+          those are the workloads, this is the machine. Rendered only while
+          something is actually waiting - steady state says nothing. */}
+      <div className="mt-auto">
+        {updates > 0 ? (
+          <Link
+            to="/updates"
+            className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <RefreshCw size={14} aria-hidden />
+            <span>
+              {updates} update{updates === 1 ? '' : 's'} available
+            </span>
+          </Link>
+        ) : null}
+        <UserRow />
       </div>
-      <UserRow />
     </aside>
   )
 }
@@ -102,17 +104,16 @@ function NavItem({
   label,
   icon: Icon,
   exact,
-  badge,
-  alert,
+  dot,
 }: {
   to: string
   label: string
   icon: LucideIcon
   exact: boolean
-  badge?: number | undefined
-  /** alert renders the badge amber: it counts actions waiting, not things
-   * existing, which is the Updates item's case (PRD v1.108). */
-  alert?: boolean | undefined
+  /** dot marks the page as needing attention. A presence, never a count:
+   * a number that is always there is furniture, a dot that appears is a
+   * signal. */
+  dot?: boolean | undefined
 }) {
   const { path } = useRouter()
   const active = isActive(path, to, exact)
@@ -129,15 +130,12 @@ function NavItem({
     >
       <Icon size={16} aria-hidden />
       <span>{label}</span>
-      {badge !== undefined && badge > 0 ? (
+      {dot ? (
         <span
-          className={cn(
-            'ml-auto rounded-full px-1.5 font-mono text-[11px] tabular-nums',
-            alert ? 'bg-status-warn/20 text-status-warn' : 'bg-muted text-muted-foreground',
-          )}
-        >
-          {badge}
-        </span>
+          aria-hidden
+          title={`${label} needs attention`}
+          className="ml-auto size-1.5 rounded-full bg-status-warn"
+        />
       ) : null}
     </Link>
   )
@@ -164,34 +162,40 @@ function ThemeToggle() {
   )
 }
 
-function SocketLine() {
-  const up = useSocketStatus()
-  return (
-    <div className="flex items-center gap-1.5 text-xs">
-      <span
-        aria-hidden
-        className={cn('size-1.5 rounded-full', up ? 'bg-status-ok' : 'bg-status-error')}
-      />
-      <span className={up ? 'text-muted-foreground' : 'text-status-error'}>
-        {up ? 'websocket connected' : 'websocket reconnecting…'}
-      </span>
-    </div>
-  )
-}
-
+/**
+ * UserRow carries who you are and whether this tab is live, in one card:
+ * the presence dot on the avatar and the word beside the role are both the
+ * socket, so "reconnecting…" reads as a fact about this session rather
+ * than a loose indicator floating above it.
+ */
 function UserRow() {
   const { session, signOut } = useSession()
+  const up = useSocketStatus()
   if (!session) return null
 
   return (
     <div className="flex items-center gap-2.5 border-t border-sidebar-border px-4 py-3">
-      <Avatar name={session.subject} />
+      <span className="relative shrink-0">
+        <Avatar name={session.subject} />
+        <span
+          aria-hidden
+          className={cn(
+            'absolute -bottom-px -right-px size-2 rounded-full border-2 border-sidebar',
+            up ? 'bg-status-ok' : 'bg-status-warn',
+          )}
+        />
+      </span>
       <div className="min-w-0">
         {/* Who you are and what you may do, always visible: a viewer who does
             not know they are one reads every missing button as broken. */}
         <div className="truncate text-sm font-medium">{session.subject}</div>
-        <div className="truncate text-xs text-muted-foreground">
-          {session.role} · {session.via}
+        <div
+          className={cn(
+            'truncate font-mono text-[11px]',
+            up ? 'text-muted-foreground' : 'text-status-warn',
+          )}
+        >
+          {up ? `${session.role} · live` : 'reconnecting…'}
         </div>
       </div>
       <div className="ml-auto flex items-center">

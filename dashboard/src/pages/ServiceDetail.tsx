@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
+  ExternalLink,
   Loader2,
   Minus,
   Pencil,
@@ -8,6 +9,7 @@ import {
   Plus,
   RotateCw,
   Scaling,
+  ScrollText,
   Square,
   SquareTerminal,
   Trash2,
@@ -26,19 +28,20 @@ import { KeyValue } from '@/components/KeyValue'
 import { LogViewer } from '@/components/LogViewer'
 import { MetricChartPanel } from '@/components/MetricChartPanel'
 import { PageHeader } from '@/components/PageHeader'
-import { Sparkline } from '@/components/Sparkline'
 import { StatusDot } from '@/components/StatusDot'
+import { TabBar, type Tab } from '@/components/TabBar'
 import { useLiveLog, MaxLogLines } from '@/hooks/useLiveLog'
 import { useLiveTopic } from '@/hooks/useLiveTopic'
 import { useRouter } from '@/hooks/useRouter'
 import { useSession } from '@/hooks/useSession'
-import { allocSubject, seedFromHistory, seriesKey, useSeries, useTimedSeries } from '@/hooks/useSeries'
+import { seriesKey, useTimedSeries } from '@/hooks/useSeries'
 import { seriesStatus } from '@/lib/seriesStatus'
+import { cn } from '@/lib/utils'
 import { scaleBounds } from '@/lib/scale'
 import { exposeUrls } from '@/lib/exposeUrl'
 import { usePagination } from '@/hooks/usePagination'
 import { PaginationControls } from '@/components/Pagination'
-import { OpenUrlMenu } from '@/components/OpenUrlMenu'
+import { OverflowMenu, overflowItem } from '@/components/OverflowMenu'
 import { Link } from '@/lib/router'
 import {
   Topic,
@@ -106,6 +109,12 @@ export function ServiceDetail({ project, service }: { project: string; service: 
   const mine = groupAllocs(allocs.data?.allocs ?? []).get(key) ?? []
   const allocPager = usePagination(mine)
 
+  // The mockup's section switcher. The alloc the Logs tab follows lives up
+  // here rather than in the panel, because an allocation row's logs button
+  // needs to set both at once.
+  const [tab, setTab] = useState<DetailTab>('allocations')
+  const [logAlloc, setLogAlloc] = useState('')
+
   // "Not found" only after the absence has held for a moment on a live
   // connection. A reconnect's first frames can briefly disagree with the
   // store, and flashing a Not-found card over a service that exists reads as
@@ -162,44 +171,76 @@ export function ServiceDetail({ project, service }: { project: string; service: 
     (e) => !e.service || e.service === service,
   )
 
+  const ready = mine.filter((a) => a.state === 'running').length
+  const scalingNames = (desired?.Scaling?.metrics ?? []).map((m) =>
+    m.name === 'p95_latency_ms' ? 'p95' : m.name,
+  )
+  // Deploy age reads off the newest alloc: a deploy replaces every alloc, so
+  // the youngest one's age is how long the current generation has been out.
+  const newest = mine.reduce<string | undefined>(
+    (best, a) =>
+      a.created_at !== undefined && (best === undefined || a.created_at > best)
+        ? a.created_at
+        : best,
+    undefined,
+  )
+
+  const tabs: Tab<DetailTab>[] = [
+    { value: 'allocations', label: 'Allocations', count: mine.length },
+    { value: 'logs', label: 'Logs' },
+    { value: 'spec', label: 'Spec' },
+    { value: 'events', label: 'Events', count: myEvents.length },
+  ]
+  if (stats.data?.edge) tabs.push({ value: 'edge', label: 'Edge' })
+
   return (
     <div className="space-y-4">
-      {/* Navigation and actions share the top row: one is where you came
-          from, the other is what you can do here, and neither is the page's
-          name. The name gets its own row underneath, where a long image
-          reference can run without squeezing the buttons. */}
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <BackChip to="/services">Services</BackChip>
-          <div className="ml-auto">
-            {desired && rollout ? (
-              <ServiceActions
-                project={project}
-                service={service}
-                desired={desired}
-                rollout={rollout}
-                degraded={mine.some((a) => a.state === 'failed')}
-              />
-            ) : null}
+      <PageHeader
+        back={
+          <div className="mb-2">
+            <BackChip to="/services">Services</BackChip>
           </div>
-        </div>
-        {/* The title is the service's full name, project included: a service
-            name is only unique inside its project, so `web` alone names two
-            different things on a node running `shop` and `blog`. It is also
-            the form every other surface uses - PipelineDetail's title, the
-            CLI's `project/service` argument, the stats subject below - so the
-            page's name now matches what you would type to reach it. */}
-        <PageHeader
-          title={<span className="font-mono">{key}</span>}
-          subtitle={
-            <span className="inline-flex items-center gap-3">
-              {status ? <StatusDot tone={status.tone} label={status.word} /> : null}
-              {rollout?.deploying ? <Badge variant="info">deploying</Badge> : null}
-              <span>{desired?.Image ?? ''}</span>
-            </span>
-          }
-        />
-      </div>
+        }
+        title={
+          <span className="flex flex-wrap items-center gap-3">
+            {/* The title is the service's full name, project included: a
+                service name is only unique inside its project, and this is
+                the form every other surface uses. */}
+            <span className="font-mono">{key}</span>
+            {status ? (
+              <span
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-normal',
+                  statusPill[status.tone],
+                )}
+              >
+                <StatusDot tone={status.tone} />
+                {status.word}
+                {desired && desired.Count > 0 ? ` · ${ready} of ${desired.Count} ready` : ''}
+              </span>
+            ) : null}
+            {rollout?.deploying ? <Badge variant="info">deploying</Badge> : null}
+          </span>
+        }
+        subtitle={
+          <span className="font-mono text-xs">
+            {desired?.Image ?? ''}
+            {scalingNames.length > 0 ? ` · autoscale ${scalingNames.join(' · ')}` : ''}
+            {newest !== undefined ? ` · deployed ${relativeAge(newest)} ago` : ''}
+          </span>
+        }
+        actions={
+          desired && rollout ? (
+            <ServiceActions
+              project={project}
+              service={service}
+              desired={desired}
+              rollout={rollout}
+              degraded={mine.some((a) => a.state === 'failed')}
+            />
+          ) : undefined
+        }
+      />
 
       <StatsPanel
         subject={key}
@@ -211,79 +252,91 @@ export function ServiceDetail({ project, service }: { project: string; service: 
         error={stats.error}
       />
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <Card>
-            <CardHeader>
-              <CardTitle>Allocations</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {mine.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No allocations.</p>
-              ) : (
-                <Table>
-                  <THead>
-                    <tr>
-                      <TH className="pl-0">Allocation</TH>
-                      <TH>State</TH>
-                      <TH>CPU</TH>
-                      <TH>Mem</TH>
-                      <TH>Restarts</TH>
-                      <TH>Reason</TH>
-                      <TH>Age</TH>
-                      <TH className="pr-0" aria-label="Actions" />
-                    </tr>
-                  </THead>
-                  <TBody>
-                    {allocPager.pageItems.map((alloc) => (
-                      <AllocRow
-                        key={alloc.id}
-                        alloc={alloc}
-                        inits={desired?.init ?? []}
-                        subject={key}
-                        stats={(stats.data?.allocs ?? []).find((a) => a.alloc_id === alloc.id)}
-                        at={stats.data?.at ?? ''}
-                        history={history}
-                        seeded={seeded}
-                        connected={stats.connected}
-                      />
-                    ))}
-                  </TBody>
-                </Table>
-              )}
-              <PaginationControls state={allocPager} />
-            </CardContent>
-          </Card>
+      <TabBar tabs={tabs} value={tab} onChange={setTab} />
 
-          <LogPanel
-            project={project}
-            service={service}
-            inits={desired?.init ?? []}
-            allocs={mine}
-          />
+      {tab === 'allocations' ? (
+        <Card className="py-1">
+          {mine.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-muted-foreground">No allocations.</p>
+          ) : (
+            <Table>
+              <THead>
+                <tr>
+                  <TH>Allocation</TH>
+                  <TH>State</TH>
+                  <TH className="text-right">CPU</TH>
+                  <TH className="text-right">Mem</TH>
+                  <TH>Age</TH>
+                  <TH className="text-right" aria-label="Actions" />
+                </tr>
+              </THead>
+              <TBody>
+                {allocPager.pageItems.map((alloc) => (
+                  <AllocRow
+                    key={alloc.id}
+                    alloc={alloc}
+                    inits={desired?.init ?? []}
+                    stats={(stats.data?.allocs ?? []).find((a) => a.alloc_id === alloc.id)}
+                    onLogs={() => {
+                      setLogAlloc(alloc.id)
+                      setTab('logs')
+                    }}
+                  />
+                ))}
+              </TBody>
+            </Table>
+          )}
+          <div className="px-3">
+            <PaginationControls state={allocPager} />
+          </div>
+        </Card>
+      ) : null}
 
-          <EdgePanel edge={stats.data?.edge} />
-        </div>
+      {tab === 'logs' ? (
+        <LogPanel
+          project={project}
+          service={service}
+          inits={desired?.init ?? []}
+          allocs={mine}
+          selectedAlloc={logAlloc}
+          onSelectAlloc={setLogAlloc}
+        />
+      ) : null}
 
-        <div className="space-y-4">
-          <AutoscalePanel desired={desired} events={myEvents} />
+      {tab === 'spec' ? (
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           <SpecPanel project={project} service={service} desired={desired} />
-          <Card>
-            <CardHeader>
-              <CardTitle>Recent events</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {myEvents.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Nothing recorded yet.</p>
-              ) : (
-                myEvents.slice(0, 5).map((e) => <EventRow key={e.id} event={e} />)
-              )}
-            </CardContent>
-          </Card>
+          <AutoscalePanel desired={desired} events={myEvents} />
         </div>
-      </div>
+      ) : null}
+
+      {tab === 'events' ? (
+        myEvents.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing recorded yet.</p>
+        ) : (
+          <div>
+            {myEvents.slice(0, 20).map((e) => (
+              <EventRow key={e.id} event={e} />
+            ))}
+          </div>
+        )
+      ) : null}
+
+      {tab === 'edge' ? <EdgePanel edge={stats.data?.edge} /> : null}
     </div>
   )
+}
+
+type DetailTab = 'allocations' | 'logs' | 'spec' | 'events' | 'edge'
+
+/** The header pill's tint per status tone: dot + word + tinted capsule, the
+ * mockup's badge. */
+const statusPill: Record<string, string> = {
+  ok: 'border-status-ok/40 bg-status-ok/10 text-status-ok',
+  warn: 'border-status-warn/40 bg-status-warn/10 text-status-warn',
+  error: 'border-status-error/40 bg-status-error/10 text-status-error',
+  muted: 'border-border bg-muted text-muted-foreground',
+  info: 'border-status-info/40 bg-status-info/10 text-status-info',
 }
 
 /**
@@ -407,20 +460,14 @@ export function ServiceActions({
             : `rolling out · ${rollout.updated}/${rollout.total} updated`}
         </span>
       ) : null}
-      {/* Opening a public URL is navigation, not a mutation, so it is not
-          gated on the admin role the write buttons need. It is absent rather
-          than disabled when there is nothing to open: see exposeUrls for the
-          cases, one of which the dashboard cannot resolve for a viewer. */}
-      <OpenUrlMenu urls={urls} />
-      <Link to={`/services/${project}/${service}/edit`}>
-        <Button size="sm" variant="outline">
-          <Pencil size={14} />
-          Edit spec
-        </Button>
-      </Link>
+      {/* The recovery control, always visible: for a healthy service a
+          Restart (a deliberate roll), for a degraded or stopped one a Start,
+          because the operator looking at a down service reaches for the verb
+          that brings it back (R29 / v1.106). Same action either way. */}
       {stopped ? (
         <Button
           size="sm"
+          variant="outline"
           disabled={disabled}
           title={title}
           onClick={() => run('start', () => scaleService(project, service, lastCount.current, csrf))}
@@ -429,105 +476,131 @@ export function ServiceActions({
           {busy === 'start' ? 'Starting…' : 'Start'}
         </Button>
       ) : (
-        <>
-          {/* Scaling writes one number and the reconciler converges; this is
-              the same route `kanea scale` and the autoscaler use, so the
-              dashboard is not a second path to the runtime. The count is
-              chosen in a dialog rather than nudged in place: a replica count
-              is a decision, and one taken by holding down a button is a
-              decision nobody made deliberately. */}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            title={title ?? bounds.hint}
-            onClick={() => setScaleOpen(true)}
-          >
-            {spinner('scale') ?? <Scaling size={14} />}
-            Scale
-          </Button>
-          <ScaleDialog
-            open={scaleOpen}
-            onClose={() => setScaleOpen(false)}
-            subject={`${project}/${service}`}
-            current={desired.Count}
-            bounds={bounds}
-            onScale={(count) => {
-              setScaleOpen(false)
-              run('scale', () => scaleService(project, service, count, csrf))
-            }}
-          />
-          {/* The recovery control. For a healthy service it is a Restart (a
-              deliberate roll); for a degraded one it is a Start, because the
-              service is down and the generation bump is what revives its
-              failed allocs (R29). Same action, same rollout wiring - only the
-              verb and icon change with state. */}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            title={title}
-            onClick={() => run('restart', () => restartService(project, service, csrf))}
-          >
-            {spinner('restart') ?? (degraded ? <Play size={14} /> : <RotateCw size={14} />)}
-            {busy === 'restart' || (initiated === 'restart' && converging)
-              ? degraded
-                ? 'Starting…'
-                : 'Restarting…'
-              : degraded
-                ? 'Start'
-                : 'Restart'}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            title={title}
-            className={confirmStop ? 'border-destructive text-destructive hover:bg-destructive/10' : ''}
-            onClick={() => {
-              if (!confirmStop) {
-                setConfirmStop(true)
-                return
-              }
-              setConfirmStop(false)
-              run('stop', () => scaleService(project, service, 0, csrf))
-            }}
-          >
-            {spinner('stop') ?? <Square size={14} />}
-            {busy === 'stop' ? 'Stopping…' : confirmStop ? 'Confirm stop?' : 'Stop'}
-          </Button>
-        </>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          title={title}
+          onClick={() => run('restart', () => restartService(project, service, csrf))}
+        >
+          {spinner('restart') ?? (degraded ? <Play size={14} /> : <RotateCw size={14} />)}
+          {busy === 'restart' || (initiated === 'restart' && converging)
+            ? degraded
+              ? 'Starting…'
+              : 'Restarting…'
+            : degraded
+              ? 'Start'
+              : 'Restart'}
+        </Button>
       )}
-      {/* Outside the stopped/running branch on purpose (PRD v1.100): a
-          stopped service must stay removable. The fire path does not go
-          through run(): that helper writes state after success, and a
-          successful remove unmounts this component by navigating away.
-          Volume data survives the removal (v1.83); the title says so. */}
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={disabled}
-        title={title ?? 'Delete the service declaration; volume data is kept'}
-        className={confirmRemove ? 'border-destructive text-destructive hover:bg-destructive/10' : ''}
-        onClick={() => {
-          if (!confirmRemove) {
-            setConfirmRemove(true)
-            return
-          }
-          setConfirmRemove(false)
-          setBusy('remove')
-          setError(null)
-          deleteService(project, service, csrf)
-            .then(() => navigate('/services'))
-            .catch((err: unknown) => {
-              setError(err instanceof Error ? err.message : String(err))
-              setBusy(null)
-            })
+      <Link to={`/services/${project}/${service}/edit`}>
+        <Button size="sm" className="font-semibold">
+          <Pencil size={14} />
+          Edit spec
+        </Button>
+      </Link>
+      {/* Everything else folds into the overflow menu (the mockup's ⋯):
+          rarer verbs, still one click-and-a-bit away. The two destructive
+          ones keep their disarm-on-timeout confirm inside the menu, which
+          stays open while a confirm is armed. */}
+      <OverflowMenu>
+        {(close) => (
+          <>
+            {urls.map((u) => (
+              <a
+                key={u}
+                href={u}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={overflowItem}
+                onClick={close}
+              >
+                <ExternalLink size={14} aria-hidden />
+                <span className="truncate">Open {u.replace(/^https?:\/\//, '')}</span>
+              </a>
+            ))}
+            {!stopped ? (
+              <button
+                type="button"
+                className={overflowItem}
+                disabled={disabled}
+                title={title ?? bounds.hint}
+                onClick={() => {
+                  close()
+                  setScaleOpen(true)
+                }}
+              >
+                <Scaling size={14} aria-hidden />
+                Scale…
+              </button>
+            ) : null}
+            {!stopped ? (
+              <button
+                type="button"
+                className={cn(overflowItem, confirmStop ? 'text-destructive' : '')}
+                disabled={disabled}
+                title={title}
+                onClick={() => {
+                  if (!confirmStop) {
+                    setConfirmStop(true)
+                    return
+                  }
+                  setConfirmStop(false)
+                  close()
+                  run('stop', () => scaleService(project, service, 0, csrf))
+                }}
+              >
+                {spinner('stop') ?? <Square size={14} aria-hidden />}
+                {busy === 'stop' ? 'Stopping…' : confirmStop ? 'Confirm stop?' : 'Stop'}
+              </button>
+            ) : null}
+            {/* Outside the stopped branch on purpose (PRD v1.100): a stopped
+                service must stay removable. The fire path does not go through
+                run(): a successful remove unmounts this page by navigating
+                away. Volume data survives the removal (v1.83). */}
+            <button
+              type="button"
+              className={cn(overflowItem, confirmRemove ? 'text-destructive' : '')}
+              disabled={disabled}
+              title={title ?? 'Delete the service declaration; volume data is kept'}
+              onClick={() => {
+                if (!confirmRemove) {
+                  setConfirmRemove(true)
+                  return
+                }
+                setConfirmRemove(false)
+                close()
+                setBusy('remove')
+                setError(null)
+                deleteService(project, service, csrf)
+                  .then(() => navigate('/services'))
+                  .catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : String(err))
+                    setBusy(null)
+                  })
+              }}
+            >
+              {busy === 'remove' ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Trash2 size={14} aria-hidden />
+              )}
+              {busy === 'remove' ? 'Removing…' : confirmRemove ? 'Confirm remove?' : 'Remove'}
+            </button>
+          </>
+        )}
+      </OverflowMenu>
+      <ScaleDialog
+        open={scaleOpen}
+        onClose={() => setScaleOpen(false)}
+        subject={`${project}/${service}`}
+        current={desired.Count}
+        bounds={bounds}
+        onScale={(count) => {
+          setScaleOpen(false)
+          run('scale', () => scaleService(project, service, count, csrf))
         }}
-      >
-        {busy === 'remove' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-        {busy === 'remove' ? 'Removing…' : confirmRemove ? 'Confirm remove?' : 'Remove'}
-      </Button>
+      />
     </div>
   )
 }
@@ -925,16 +998,27 @@ function StatsPanel({
 
   const memoryText = memoryUsageText(sample, memoryLimitBytes)
 
+  // One segmented card rather than four boxes (the mockup's instrument row):
+  // the same hairline treatment as StatStrip, drawn as left/top borders so
+  // the grid wraps cleanly at two columns.
+  const cell = (i: number) =>
+    [
+      'min-w-0 p-4',
+      i % 2 === 1 ? 'border-l border-border' : '',
+      i >= 2 ? 'border-t border-border lg:border-t-0' : '',
+      i > 0 ? 'lg:border-l lg:border-border' : '',
+    ].join(' ')
+
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <Card className="grid overflow-hidden sm:grid-cols-2 lg:grid-cols-4">
       {/* CPU and memory are percentages of the declared limit, so the scale
           is fixed at 100: a flat 2% line and a flat 90% one must not look
           the same. Rate and latency have no natural ceiling and scale to
           their own range. */}
-      <Card className="p-4">
+      <div className={cell(0)}>
         <MetricChartPanel label="CPU" unit="%" series={cpu} scale="percent" latest={sample?.cpu} tone={1} big status={status} error={error} />
-      </Card>
-      <Card className="p-4">
+      </div>
+      <div className={cell(1)}>
         <MetricChartPanel
           label="Memory"
           unit="%"
@@ -947,49 +1031,35 @@ function StatsPanel({
           status={status}
           error={error}
         />
-      </Card>
-      <Card className="p-4">
+      </div>
+      <div className={cell(2)}>
         <MetricChartPanel label="Requests / s" unit="/s" series={rps} scale="auto" latest={sample?.rps} tone={3} big status={status} error={error} />
-      </Card>
-      <Card className="p-4">
+      </div>
+      <div className={cell(3)}>
         <MetricChartPanel label="p95 latency" unit=" ms" series={p95} scale="auto" latest={sample?.p95_latency_ms} tone={4} big status={status} error={error} />
-      </Card>
-    </div>
+      </div>
+    </Card>
   )
 }
 
 /** AllocRow is one alloc, with its own resource history. */
+/**
+ * AllocRow is one container: id (with the leader's init steps beneath),
+ * state with its restart-and-reason story as a second line, the live
+ * numbers as numbers, and the two per-alloc verbs - jump to its logs,
+ * open a shell.
+ */
 function AllocRow({
   alloc,
   inits,
-  subject,
   stats,
-  at,
-  history,
-  seeded,
-  connected,
+  onLogs,
 }: {
   alloc: Alloc
   inits: InitContainer[]
-  subject: string
   stats: AllocStats | undefined
-  at: string
-  history: StatsHistory | null
-  seeded: boolean
-  connected: boolean
+  onLogs: () => void
 }) {
-  // Seeded from the per-alloc half of the history (v1.79). Before it existed
-  // these two sparklines accumulated from empty at one point per five seconds,
-  // so a row was visibly blank for the first minute of every visit, with no
-  // readout beside it to fall back on.
-  const block = history?.allocs?.[alloc.id]
-  const key = allocSubject(subject, alloc.id)
-  const cpu = useSeries(
-    seriesKey(key, 'cpu'), stats?.cpu, at, block ? seedFromHistory(block, 'cpu') : undefined)
-  const memory = useSeries(
-    seriesKey(key, 'memory'), stats?.memory, at,
-    block ? seedFromHistory(block, 'memory') : undefined)
-  const status = seriesStatus({ points: cpu.length, seeded, connected })
   const tone = allocStateVariant(alloc.state)
   const reason = allocExitReason(alloc)
   const { session } = useSession()
@@ -998,7 +1068,7 @@ function AllocRow({
 
   return (
     <TR>
-      <TD className="pl-0 font-mono text-xs">
+      <TD className="font-mono text-xs">
         {alloc.id}
         {/* The init sequence runs once per service, on the leader alone
             (R32, v1.92), so only alloc 0 has steps to show; a follower's row
@@ -1012,75 +1082,74 @@ function AllocRow({
           tone={tone === 'ok' ? 'ok' : tone === 'warn' ? 'warn' : tone === 'error' ? 'error' : 'muted'}
           label={alloc.state}
         />
+        {/* Restarts and the last exit's reason share the second line: "how
+            stable is this container" is one question (PRD v1.68). */}
+        <div
+          className="mt-0.5 text-xs text-muted-foreground"
+          {...(reason?.message ? { title: reason.message } : {})}
+        >
+          {alloc.restarts ?? 0} restart{(alloc.restarts ?? 0) === 1 ? '' : 's'}
+          {reason ? (
+            <span className={reason.alarming ? 'text-status-error' : ''}> · {reason.label}</span>
+          ) : null}
+        </div>
       </TD>
-      <TD>
-        <Sparkline points={cpu} max={100} unit="%" tone={1} className="h-6 w-24" label={`CPU for ${alloc.id}`} status={status} />
+      <TD className="text-right font-mono tabular-nums">
+        {stats?.cpu !== undefined ? `${Math.round(stats.cpu)}%` : '–'}
       </TD>
-      <TD>
-        <Sparkline points={memory} max={100} unit="%" tone={2} className="h-6 w-24" label={`Memory for ${alloc.id}`} status={status} />
-      </TD>
-      <TD className="font-mono tabular-nums">
-        {alloc.restarts ?? 0}
-        {alloc.last_exit_at ? (
-          <span className="text-muted-foreground"> ({relativeAge(alloc.last_exit_at)})</span>
-        ) : null}
-      </TD>
-      <TD>
-        {/* Why it last stopped, or why it never started (PRD v1.68). Shown
-            whatever the current state: the State column is right there, so a
-            running row carrying OOMKilled reads as "up now, killed for memory
-            last time", which is the thing worth knowing. */}
-        {reason ? (
-          <span
-            className="flex max-w-[22rem] flex-col leading-tight"
-            title={reason.message ? `${reason.label}; ${reason.message}` : reason.label}
-          >
-            <span className={reason.alarming ? 'text-status-error' : 'text-muted-foreground'}>
-              {reason.label}
-            </span>
-            {reason.message ? (
-              <span className="truncate text-xs text-muted-foreground">{reason.message}</span>
-            ) : null}
-          </span>
-        ) : (
-          <span className="text-muted-foreground">-</span>
-        )}
+      <TD className="text-right font-mono tabular-nums">
+        {stats?.memory_bytes !== undefined
+          ? formatBytes(stats.memory_bytes)
+          : stats?.memory !== undefined
+            ? `${Math.round(stats.memory)}%`
+            : '–'}
       </TD>
       <TD className="font-mono tabular-nums">{relativeAge(alloc.created_at)}</TD>
-      <TD className="pr-0 text-right">
-        {/* The most privileged verb on the page: admin-only like the API, and
-            only against a running alloc; a shell into a stopped one is a
-            worse error message than this button's absence. */}
-        {admin && alloc.state === 'running' ? (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 px-2 text-xs"
-              onClick={() => setShellOpen(true)}
-            >
-              <SquareTerminal size={13} />
-              Shell
-            </Button>
-            <Dialog
-              open={shellOpen}
-              onClose={() => setShellOpen(false)}
-              dismissable={false}
-              title={<span className="font-mono">{alloc.id} · sh</span>}
-              className="h-[70vh] w-[90vw] max-w-4xl"
-            >
-              {/* Mounted only while open: the terminal (and xterm's lazy
-                  chunk) exist exactly while someone is looking at them. */}
-              {shellOpen ? <ExecTerminal project={alloc.project} alloc={alloc.id} /> : null}
-            </Dialog>
-          </>
-        ) : null}
+      <TD className="text-right">
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button"
+            aria-label={`Logs for ${alloc.id}`}
+            title="View this alloc's logs"
+            className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={onLogs}
+          >
+            <ScrollText size={13} aria-hidden />
+          </button>
+          {/* The most privileged verb on the page: admin-only like the API,
+              and only against a running alloc; a shell into a stopped one is
+              a worse error message than this button's absence. */}
+          {admin && alloc.state === 'running' ? (
+            <>
+              <button
+                type="button"
+                aria-label={`Shell into ${alloc.id}`}
+                title="Open a shell"
+                className="rounded-md border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => setShellOpen(true)}
+              >
+                <SquareTerminal size={13} aria-hidden />
+              </button>
+              <Dialog
+                open={shellOpen}
+                onClose={() => setShellOpen(false)}
+                dismissable={false}
+                title={<span className="font-mono">{alloc.id} · sh</span>}
+                className="h-[70vh] w-[90vw] max-w-4xl"
+              >
+                {/* Mounted only while open: the terminal (and xterm's lazy
+                    chunk) exist exactly while someone is looking at them. */}
+                {shellOpen ? <ExecTerminal project={alloc.project} alloc={alloc.id} /> : null}
+              </Dialog>
+            </>
+          ) : null}
+        </div>
       </TD>
     </TR>
   )
 }
 
-/** LogPanel streams the service's output over the shared socket. */
+
 type InitStepState = 'done' | 'running' | 'failed' | 'pending'
 
 /**
@@ -1150,11 +1219,17 @@ function LogPanel({
   service,
   inits,
   allocs,
+  selectedAlloc,
+  onSelectAlloc,
 }: {
   project: string
   service: string
   inits: InitContainer[]
   allocs: Alloc[]
+  /** Which alloc's lines to show; lifted to the page so an allocation row's
+   * logs button can select one while switching tabs. */
+  selectedAlloc: string
+  onSelectAlloc: (id: string) => void
 }) {
   // Which container's log this panel is following: '' is the task, otherwise an
   // init container's block name (R32). Each step writes its own file, so this
@@ -1168,12 +1243,11 @@ function LogPanel({
   const { lines, error, dropped, droppedByDaemon } = useLiveLog(project, service, 200, container)
   const [filter, setFilter] = useState('')
   const [follow, setFollow] = useState(true)
-  // Which alloc's lines to show: '' is every alloc. A filter over the one
-  // merged stream rather than a second subscription, because every line
-  // already carries its alloc_id; derived-validated like the container
-  // picker, so an alloc that rolled away while selected falls back to all.
-  const [allocSelected, setAllocSelected] = useState('')
-  const allocId = allocs.some((a) => a.id === allocSelected) ? allocSelected : ''
+  // '' is every alloc. A filter over the one merged stream rather than a
+  // second subscription, because every line already carries its alloc_id;
+  // derived-validated like the container picker, so an alloc that rolled
+  // away while selected falls back to all.
+  const allocId = allocs.some((a) => a.id === selectedAlloc) ? selectedAlloc : ''
 
   // Memoized: at ten thousand buffered lines the filter is no longer free,
   // and this re-runs on every stats frame otherwise.
@@ -1210,7 +1284,7 @@ function LogPanel({
           Allocation
           <select
             value={allocId}
-            onChange={(e) => setAllocSelected(e.target.value)}
+            onChange={(e) => onSelectAlloc(e.target.value)}
             aria-label="Which allocation's log to show"
             className="rounded-md border bg-background px-2 py-1 text-xs"
           >

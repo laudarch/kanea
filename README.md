@@ -10,7 +10,7 @@
 
 <p align="center"><strong>Container orchestration in one binary.</strong></p>
 
-<img src="./site/assets/shot-dashboard.webp" alt="The Kanea dashboard: counts for services, allocations, builds and events; sparklines for CPU, memory, load and running allocations; and panels for recent events, autoscaler decisions and backup replication" width="900">
+<img src="./site/assets/shot-dashboard.webp" alt="The Kanea dashboard: attention banners for anything unsettled; counts for services, allocations, builds and events; live gauges for CPU, memory, load and GPU; the services list beside recent activity; and a one-line backups verdict" width="900">
 
 Kanea is a lightweight container orchestration platform written in Go. Services run on **containerd**, networking and load balancing are **Kanea's own eBPF datapath**, TLS comes from **Let's Encrypt, a per-node CA, or certificates you already have**, and it ships a real-time **shadcn/ui dashboard**, an **MCP server** for AI agents, **GitOps pipelines** (rootless BuildKit and an embedded build registry, so `build { context = "." }` needs no registry of yours), **eBPF-driven autoscaling**, and **encrypted S3-backed state replication** with backup and restore.
 
@@ -64,7 +64,7 @@ and a **keyless cosign** signature over the checksums. The SBOMs are listed in
 the checksums, so that one signature covers them too:
 
 ```bash
-VERSION=v0.36.0; ARCH=amd64
+VERSION=v0.37.0; ARCH=amd64
 BASE=https://github.com/m18h/kanea/releases/download/$VERSION
 
 curl -fLO $BASE/kanea_${VERSION#v}_linux_$ARCH.tar.gz

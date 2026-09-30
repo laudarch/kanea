@@ -880,8 +880,9 @@ runs any state migrations. Running workloads are untouched throughout.</pre>
 
     <p>
       An admin can run the same flow from the dashboard's Updates page, reached
-      from a pinned sidebar item whose badge marks a newer published release or a
-      pending OS reboot. The page checks for updates and installs one
+      from a sidebar line that appears when there is something to do - a newer
+      published release or a pending OS reboot - and stays out of the way
+      otherwise. The page checks for updates and installs one
       (<code>GET</code> and
       <code>POST /v1/upgrade</code>, admin-only, audited). The daemon performs the
       sequence above on itself - pre-upgrade backup, fetch and verify, atomic

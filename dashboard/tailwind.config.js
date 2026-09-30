@@ -4,6 +4,17 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      // The v2 design system's faces: Space Grotesk for UI, JetBrains Mono
+      // for everything a machine wrote. Both variable, both self-hosted.
+      fontFamily: {
+        sans: ['"Space Grotesk Variable"', 'system-ui', 'sans-serif'],
+        mono: ['"JetBrains Mono Variable"', 'ui-monospace', 'monospace'],
+      },
+      // The v2 type scale: body and table cells at 13px, secondary at 12px.
+      fontSize: {
+        xs: ['0.75rem', { lineHeight: '1.35' }],
+        sm: ['0.8125rem', { lineHeight: '1.5' }],
+      },
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
@@ -31,6 +42,7 @@ export default {
           2: 'hsl(var(--chart-2))',
           3: 'hsl(var(--chart-3))',
           4: 'hsl(var(--chart-4))',
+          5: 'hsl(var(--chart-5))',
         },
         status: {
           ok: 'hsl(var(--status-ok))',

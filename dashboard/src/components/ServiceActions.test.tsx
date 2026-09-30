@@ -49,6 +49,14 @@ function withScaling(count: number, scaling?: Service['Scaling']): Service {
   return { ...service, Count: count, ...(scaling ? { Scaling: scaling } : {}) }
 }
 
+/** The ⋯ menu (v2): Scale, Stop, Remove and Open live behind it now. The
+ * panel stays open across clicks, so arming a confirm keeps its button. */
+function inMenu<T>(get: () => T): T {
+  const more = screen.getByRole('button', { name: 'More actions' })
+  if (more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more)
+  return get()
+}
+
 describe('ServiceActions', () => {
   it('idle: lifecycle buttons are enabled and no status line shows', () => {
     renderActions({ deploying: false, updated: 2, total: 2 })
@@ -60,7 +68,7 @@ describe('ServiceActions', () => {
     renderActions({ deploying: true, updated: 1, total: 3 })
     expect(screen.getByText('rolling out · 1/3 updated')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Restart/ })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('button', { name: /Stop/ })).toHaveProperty('disabled', true)
+    inMenu(() => expect(screen.getByRole('button', { name: /Stop/ })).toHaveProperty('disabled', true))
     // Edit spec stays reachable: reading a spec during a rollout is harmless.
     expect(screen.getByRole('button', { name: /Edit spec/ })).toHaveProperty('disabled', false)
   })
@@ -107,7 +115,7 @@ describe('ServiceActions scaling', () => {
 
   /** openScale clicks the toolbar button and returns the dialog's controls. */
   function openScale() {
-    fireEvent.click(screen.getByRole('button', { name: /Scale$/ }))
+    inMenu(() => fireEvent.click(screen.getByRole('button', { name: 'Scale…' })))
     return {
       more: screen.getByRole('button', { name: 'More replicas' }),
       fewer: screen.getByRole('button', { name: 'Fewer replicas' }),
@@ -207,7 +215,7 @@ describe('ServiceActions scaling', () => {
       { ...adminSession, session: { subject: 'v', role: 'viewer', via: 'session' } },
       withScaling(2),
     )
-    expect(screen.getByRole('button', { name: /Scale$/ })).toHaveProperty('disabled', true)
+    inMenu(() => expect(screen.getByRole('button', { name: 'Scale…' })).toHaveProperty('disabled', true))
   })
 })
 
@@ -242,7 +250,7 @@ describe('ServiceActions remove', () => {
   it('arms on the first click and deletes nothing', () => {
     const calls = captureRequests()
     renderActions({ deploying: false, updated: 2, total: 2 })
-    fireEvent.click(screen.getByRole('button', { name: /Remove/ }))
+    inMenu(() => fireEvent.click(screen.getByRole('button', { name: /Remove/ })))
     expect(screen.getByRole('button', { name: /Confirm remove\?/ })).toBeTruthy()
     expect(calls).toHaveLength(0)
   })
@@ -250,7 +258,7 @@ describe('ServiceActions remove', () => {
   it('the second click sends the DELETE, with the CSRF token', () => {
     const calls = captureRequests()
     renderActions({ deploying: false, updated: 2, total: 2 })
-    const button = screen.getByRole('button', { name: /Remove/ })
+    const button = inMenu(() => screen.getByRole('button', { name: /Remove/ }))
     fireEvent.click(button)
     fireEvent.click(button)
     expect(calls).toHaveLength(1)
@@ -264,7 +272,7 @@ describe('ServiceActions remove', () => {
       { deploying: false, updated: 2, total: 2 },
       { ...adminSession, session: { subject: 'v', role: 'viewer', via: 'session' } },
     )
-    expect(screen.getByRole('button', { name: /Remove/ })).toHaveProperty('disabled', true)
+    inMenu(() => expect(screen.getByRole('button', { name: /Remove/ })).toHaveProperty('disabled', true))
   })
 
   // The placement rule (PRD v1.100): the button lives outside the
@@ -272,7 +280,7 @@ describe('ServiceActions remove', () => {
   // Tucking it into either branch makes this fail.
   it('is offered for a stopped service too', () => {
     renderActions({ deploying: false, updated: 0, total: 0 }, adminSession, withScaling(0))
-    expect(screen.getByRole('button', { name: /Remove/ })).toHaveProperty('disabled', false)
+    inMenu(() => expect(screen.getByRole('button', { name: /Remove/ })).toHaveProperty('disabled', false))
   })
 })
 
@@ -301,7 +309,7 @@ describe('ServiceActions open', () => {
 
   it('links to the public URL in a new tab, safely', () => {
     renderActions({ deploying: false, updated: 2, total: 2 }, adminSession, exposed)
-    const link = screen.getByRole('link', { name: /Open/ })
+    const link = inMenu(() => screen.getByRole('link', { name: /Open/ }))
     expect(link.getAttribute('href')).toBe('https://shop.example.com')
     expect(link.getAttribute('target')).toBe('_blank')
     expect(link.getAttribute('rel')).toBe('noopener noreferrer')
@@ -315,13 +323,14 @@ describe('ServiceActions open', () => {
     } as Service
     renderActions({ deploying: false, updated: 2, total: 2 }, adminSession, many)
 
-    fireEvent.click(screen.getByRole('button', { name: /Open/ }))
     for (const url of [
       'https://shop.example.com',
       'https://www.shop.example.com',
       'https://admin.example.com',
     ]) {
-      expect(screen.getByRole('link', { name: url })).toBeTruthy()
+      expect(
+        inMenu(() => screen.getByRole('link', { name: `Open ${url.replace('https://', '')}` })),
+      ).toBeTruthy()
     }
   })
 
@@ -331,12 +340,12 @@ describe('ServiceActions open', () => {
       { ...adminSession, session: { subject: 'v', role: 'viewer', via: 'session' } },
       exposed,
     )
-    expect(screen.getByRole('link', { name: /Open/ })).toBeTruthy()
+    inMenu(() => expect(screen.getByRole('link', { name: /Open/ })).toBeTruthy())
   })
 
   it('is absent, not disabled, for a service with no public route', () => {
     renderActions({ deploying: false, updated: 2, total: 2 }, adminSession, withScaling(2))
-    expect(screen.queryByRole('link', { name: /Open/ })).toBeNull()
+    inMenu(() => expect(screen.queryByRole('link', { name: /Open/ })).toBeNull())
   })
 })
 
@@ -384,7 +393,7 @@ describe('ServiceActions degraded', () => {
   it('keeps Remove available on a degraded service, and it deletes', () => {
     const calls = captureRequests()
     renderActions({ deploying: false, updated: 0, total: 2 }, adminSession, withScaling(2), true)
-    const remove = screen.getByRole('button', { name: /Remove/ })
+    const remove = inMenu(() => screen.getByRole('button', { name: /Remove/ }))
     expect(remove).toHaveProperty('disabled', false)
     fireEvent.click(remove)
     fireEvent.click(remove)

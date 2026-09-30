@@ -26,7 +26,7 @@ export function StatTile({ label, value, sub, tone, className }: StatTileProps) 
       <div className="mt-1 flex items-baseline gap-2">
         <span
           className={cn(
-            'font-mono text-3xl font-semibold tabular-nums',
+            'font-mono text-[22px] font-medium tabular-nums',
             valueTone[tone ?? 'default'],
           )}
         >

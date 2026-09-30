@@ -147,7 +147,7 @@ export function SpecEditorPage({
     !admin || !validated || busy !== null || (gitSource !== undefined && !confirmedOverwrite)
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
         <BackChip to={editing ? `/services/${project}/${service}` : '/services'}>
           {editing ? service : 'Services'}

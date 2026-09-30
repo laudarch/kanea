@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Projects } from '@/pages/Projects'
 import { Router } from '@/lib/router'
@@ -128,13 +128,21 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** Opens a project row's ⋯ menu (v2) and returns the queried element. */
+function inRowMenu<T>(project: string, get: () => T): T {
+  const more = screen.getByRole('button', { name: `Actions for ${project}` })
+  if (more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more)
+  return get()
+}
+
 describe('Projects', () => {
   it('lists projects with their git source and health', async () => {
     routeFetch({ '/v1/projects': projects })
     renderProjects(admin)
 
     expect(await screen.findByText('shop')).toBeDefined()
-    expect(screen.getByText('https://github.com/acme/shop#main')).toBeDefined()
+    expect(screen.getByText('git · main')).toBeDefined()
+    expect(screen.getByTitle('https://github.com/acme/shop')).toBeDefined()
     // The short commit, and how long ago the sync landed.
     expect(screen.getByText(/abcdef1/)).toBeDefined()
     expect(screen.getByText('running')).toBeDefined()
@@ -148,14 +156,14 @@ describe('Projects', () => {
 
     await screen.findByText('shop')
     // One button for the git-backed project; the other row shows a dash.
-    expect(screen.getAllByRole('button', { name: 'Sync now' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Sync' })).toHaveLength(1)
   })
 
   it('disables the sync for a viewer and says why', async () => {
     routeFetch({ '/v1/projects': projects })
     renderProjects(viewer)
 
-    const button = await screen.findByRole('button', { name: 'Sync now' })
+    const button = await screen.findByRole('button', { name: 'Sync' })
     expect(button.hasAttribute('disabled')).toBe(true)
     expect(button.getAttribute('title')).toBe('Requires the admin role')
   })
@@ -164,7 +172,7 @@ describe('Projects', () => {
     routeFetch({ '/v1/projects': projects, '/v1/projects/shop/sync': { status: 200 } })
     renderProjects(admin)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync now' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync' }))
 
     await waitFor(() => {
       const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
@@ -172,7 +180,7 @@ describe('Projects', () => {
     })
   })
 
-  it('expands a project to the services declared in it', async () => {
+  it("shows a project's services as chips on its row", async () => {
     routeFetch({ '/v1/projects': projects })
     renderProjects(admin)
 
@@ -186,10 +194,12 @@ describe('Projects', () => {
     })
     deliver('allocs', { allocs: [] })
 
-    fireEvent.click(screen.getByRole('button', { name: /shop/ }))
-    expect(screen.getByText('web')).toBeDefined()
-    // A project's row shows its own services and nobody else's.
-    expect(screen.queryByText('toy')).toBeNull()
+    const row = screen.getByText('shop').closest('tr') as HTMLElement
+    expect(within(row).getByText('web')).toBeDefined()
+    // A project's row shows its own services and nobody else's: `toy`
+    // belongs to `lab` and renders on lab's row alone.
+    expect(within(row).queryByText('toy')).toBeNull()
+    expect(screen.getByText('toy')).toBeDefined()
   })
 
   it('says a project exists once a service declares itself into one', async () => {
@@ -207,6 +217,7 @@ describe('Projects', () => {
     renderProjects(viewer)
 
     await screen.findByText('shop')
+    inRowMenu('shop', () => undefined)
     for (const name of ['Stop', 'Remove'] as const) {
       for (const button of screen.getAllByRole('button', { name })) {
         expect(button.hasAttribute('disabled')).toBe(true)
@@ -227,7 +238,7 @@ describe('Projects', () => {
       ],
     })
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0] as HTMLElement)
+    inRowMenu('shop', () => fireEvent.click(screen.getByRole('button', { name: 'Remove' })))
     // The dialog names what a yes destroys: the services, sorted, and the
     // pipeline config on a git-backed project.
     expect(screen.getByText('api, web')).toBeDefined()
@@ -275,9 +286,8 @@ describe('Projects', () => {
     await screen.findByText('shop')
 
     // Two-click confirm: armed by the first, fired by the second.
-    const stop = screen.getAllByRole('button', { name: 'Stop' })[0] as HTMLElement
-    fireEvent.click(stop)
-    fireEvent.click(screen.getAllByRole('button', { name: 'Confirm stop?' })[0] as HTMLElement)
+    inRowMenu('shop', () => fireEvent.click(screen.getByRole('button', { name: 'Stop' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop?' }))
 
     await waitFor(() => {
       const calls = (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } })

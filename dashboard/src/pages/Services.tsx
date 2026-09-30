@@ -86,12 +86,29 @@ export function Services() {
   })
 
   const allocCount = allocs.data?.allocs?.length ?? 0
+  const byStatus = (word: string) => rows.filter((r) => r.status.word === word).length
+  const attention = rows.filter((r) => r.status.word === 'scaling' || r.status.word === 'degraded')
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Services"
-        subtitle={`${list.length} service${list.length === 1 ? '' : 's'} · ${allocCount} alloc${allocCount === 1 ? '' : 's'}`}
+        subtitle={
+          <>
+            <span>
+              {list.length} service{list.length === 1 ? '' : 's'} · {allocCount} allocation
+              {allocCount === 1 ? '' : 's'}
+            </span>
+            {attention.length > 0 ? (
+              <span className="flex items-center gap-1.5 text-status-warn">
+                <StatusDot tone="warn" />
+                {byStatus('degraded') > 0
+                  ? `${byStatus('degraded')} degraded`
+                  : `${byStatus('scaling')} scaling`}
+              </span>
+            ) : null}
+          </>
+        }
         actions={
           <Link to="/services/new">
             <Button className="font-semibold">Deploy service</Button>
@@ -108,7 +125,14 @@ export function Services() {
       ) : (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <FilterChips options={statusFilters} value={status} onChange={setStatus} />
+            <FilterChips
+              options={statusFilters.map((f) => ({
+                ...f,
+                count: f.value === 'all' ? rows.length : byStatus(f.value),
+              }))}
+              value={status}
+              onChange={setStatus}
+            />
             <Input
               type="search"
               value={query}
@@ -137,7 +161,7 @@ export function Services() {
                       Status
                     </SortHeader>
                     <SortHeader sort={sort} sortKey="allocs" className="pt-2">
-                      Allocs
+                      Ready
                     </SortHeader>
                     <TH className="pt-2">CPU</TH>
                     <TH className="pt-2">Mem</TH>
@@ -201,7 +225,9 @@ function ServiceRow({
       <TD>
         {metrics.length > 0 ? (
           <Badge variant="accent" className="font-mono text-[11px]">
-            {metrics.map((m) => m.name).join(' · ')}
+            {/* Short names, the mockup's: the full metric key is the spec's
+                business; the chip only says which levers are pulling. */}
+            {metrics.map((m) => (m.name === 'p95_latency_ms' ? 'p95' : m.name)).join(' · ')}
           </Badge>
         ) : (
           <span className="font-mono text-xs text-muted-foreground">off</span>

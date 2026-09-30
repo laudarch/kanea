@@ -258,7 +258,7 @@ export function LogViewer({
           onFollowChange?.(atTail)
         }}
         className={cn(
-          'overflow-auto rounded-md bg-muted/40 p-2.5 font-mono text-xs leading-relaxed',
+          'overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3 font-mono text-xs leading-[1.85]',
           // Expanded, the box takes whatever the dialog gives it rather than a
           // fixed height. min-h-0 is what lets a flex child actually shrink and
           // scroll instead of growing its parent past the viewport.

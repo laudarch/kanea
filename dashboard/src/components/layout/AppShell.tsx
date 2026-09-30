@@ -48,15 +48,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="text-sm font-semibold">kanea</span>
         </div>
 
-        {/* Fluid, not boxed: the content column fills the width the sidebar
-            leaves it, with a gutter that grows a little on large screens
-            rather than a centred column with empty margins. What this page
-            shows is tables, allocation rows and time-series charts, and every
-            one of them is worth more width. A max-width would spend a 32"
-            monitor on whitespace. The charts follow, because UPlotChart sizes
-            itself from a ResizeObserver rather than from a fixed pixel width. */}
+        {/* Boxed at the design system's 1240px (v2; this reverses the old
+            fluid call): tables and instrument strips read best at a line
+            length, and on a 32" monitor an edge-to-edge table puts a row's
+            name half a metre from its number. The charts follow the column,
+            because UPlotChart sizes itself from a ResizeObserver. */}
         <main className="flex-1 overflow-y-auto">
-          <div className="space-y-4 px-4 py-6 md:px-6 md:py-8 xl:px-8">{children}</div>
+          <div className="mx-auto max-w-[1240px] space-y-4 px-4 py-6 md:px-9 md:py-8">
+            {children}
+          </div>
         </main>
       </div>
     </div>

@@ -1,15 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
+import { ArrowRight, DatabaseBackup } from 'lucide-react'
 import { Link } from '@/lib/router'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { KeyValueSkeleton } from '@/components/Skeletons'
+import { Card } from '@/components/ui/card'
+import { AttentionBanner } from '@/components/AttentionBanner'
 import { EventRow } from '@/components/EventRow'
-import { KeyValue } from '@/components/KeyValue'
-import { MetricChartPanel } from '@/components/MetricChartPanel'
 import { PageHeader } from '@/components/PageHeader'
-import { StatTile } from '@/components/StatTile'
+import { Sparkline } from '@/components/Sparkline'
+import { StatStrip, type StatCell } from '@/components/StatStrip'
+import { StatusDot } from '@/components/StatusDot'
 import { useLiveTopic } from '@/hooks/useLiveTopic'
-import { seriesKey, useTimedSeries } from '@/hooks/useSeries'
-import { seriesStatus } from '@/lib/seriesStatus'
+import { seriesKey, useTimedSeries, type TimedSeries } from '@/hooks/useSeries'
+import { seriesStatus, type SeriesStatus } from '@/lib/seriesStatus'
 import {
   Topic,
   allocsResponseSchema,
@@ -18,25 +19,27 @@ import {
   fetchHealth,
   fetchNodeStats,
   fetchRuns,
+  fetchVolumes,
   nodeSampleSchema,
   servicesResponseSchema,
-  type NodeStats,
+  type Alloc,
+  type Service,
   type StatsHistory,
 } from '@/lib/api'
 import { isStale, replicationLag } from '@/lib/backups'
-import { useDateStyle } from '@/hooks/useDateStyle'
-import { formatDateTime } from '@/lib/datetime'
-import { parseScaleDecision, type ScaleDecision } from '@/lib/events'
 import {
   formatBytes,
   formatUptime,
   groupAllocs,
   serviceHealth,
+  type Health,
 } from '@/lib/state'
 
 /**
- * The Dashboard is the "should I worry" page: counts, node utilisation, the
- * last few events, the autoscaler's recent decisions, and backup health.
+ * The Dashboard is the "should I worry" page, in the mockup's order: the
+ * things that need attention first (banners), then the counts, the node's
+ * own numbers, the services beside what just happened, and one line on
+ * whether the state is safely somewhere else.
  */
 export function Overview() {
   const services = useLiveTopic({ topic: Topic.Services }, servicesResponseSchema)
@@ -49,11 +52,8 @@ export function Overview() {
   })
 
   // Live over the socket the page is already holding (v1.79), with its own
-  // seed on the first frame, so the utilisation charts draw a populated window
-  // on arrival instead of growing one point per ten seconds from empty. The
-  // series list is explicit because the default set is what v1.38 and v1.42
-  // shipped, and load1 and allocs_running are the two panels that could never
-  // seed at all.
+  // seed on the first frame, so the utilisation cells draw a populated window
+  // on arrival instead of growing one point per ten seconds from empty.
   const node = useLiveTopic(
     {
       topic: Topic.Node,
@@ -64,7 +64,7 @@ export function Overview() {
   )
 
   // One release of fallback for a daemon that predates the topic; without it
-  // an upgrade lag would blank the card rather than merely slow it down.
+  // an upgrade lag would blank the strip rather than merely slow it down.
   const nodeRest = useQuery({
     queryKey: ['node-stats'],
     queryFn: ({ signal }) => fetchNodeStats(signal),
@@ -91,14 +91,23 @@ export function Overview() {
     refetchInterval: 30_000,
   })
 
+  const volumes = useQuery({
+    queryKey: ['volumes'],
+    queryFn: ({ signal }) => fetchVolumes(signal),
+    refetchInterval: 30_000,
+  })
+
   // Functions are services too, but every surface counts them under
-  // Functions: the sidebar badge and the Services page both filter them
-  // out, so the tile must agree rather than show a number one higher.
+  // Functions: the sidebar and the Services page both filter them out, so
+  // this page must agree rather than show a number one higher.
   const list = (services.data?.services ?? []).filter((s) => s.function == null)
   const byService = groupAllocs(allocs.data?.allocs ?? [])
-  const healthy = list.filter(
-    (svc) => serviceHealth(svc, byService.get(`${svc.Project}/${svc.Service}`) ?? []).settled,
-  ).length
+  const statuses = list.map((svc) => {
+    const mine = byService.get(`${svc.Project}/${svc.Service}`) ?? []
+    return { svc, allocs: mine, health: serviceHealth(svc, mine) }
+  })
+  const unsettled = statuses.filter((s) => !s.health.settled)
+  const healthy = statuses.length - unsettled.length
 
   const allAllocs = allocs.data?.allocs ?? []
   const running = allAllocs.filter((a) => a.state === 'running').length
@@ -111,169 +120,174 @@ export function Overview() {
   const warns = recent.filter((e) => e.severity === 'warning').length
   const errors = recent.filter((e) => e.severity === 'error').length
 
-  const style = useDateStyle()
-  const decisions = feed
-    .map(parseScaleDecision)
-    .filter((d): d is ScaleDecision => d !== null)
-    .slice(0, 4)
+  // A storage resource is over budget when any of its mounts is: one banner
+  // per resource, worded from its worst mount, because three mounts of one
+  // NFS export over budget is one fact about one export.
+  const overBudget = (volumes.data ?? []).flatMap((storage) => {
+    const over = (storage.mounts ?? []).filter((m) => m.state === 'over')
+    const worst = over.sort((a, b) => (b.used_bytes ?? 0) - (a.used_bytes ?? 0))[0]
+    return worst ? [{ storage, mount: worst }] : []
+  })
 
   const subtitle =
+    services.data === undefined
+      ? undefined
+      : unsettled.length === 0
+        ? `All ${statuses.length} service${statuses.length === 1 ? '' : 's'} healthy`
+        : `${healthy} of ${statuses.length} services healthy · ${unsettled.length} need${unsettled.length === 1 ? 's' : ''} attention`
+
+  const meta =
     health.data?.uptime_seconds !== undefined
-      ? `up ${formatUptime(health.data.uptime_seconds)}`
+      ? `up ${formatUptime(health.data.uptime_seconds)}${node.connected ? ' · live' : ''}`
       : undefined
 
   return (
-    <div className="space-y-4">
-      <PageHeader title="Dashboard" subtitle={subtitle} />
+    <div className="space-y-5">
+      <PageHeader title="Dashboard" subtitle={subtitle} meta={meta} />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Services" value={list.length} sub={`${healthy} healthy`} />
-        <StatTile label="Allocations" value={allAllocs.length} sub={`${running} running`} />
-        <StatTile
-          label="Builds"
-          value={building}
-          tone={building > 0 ? 'primary' : 'default'}
-          sub={building > 0 ? 'slot 1/1 in use' : 'slot 0/1 · idle'}
-        />
-        <StatTile
-          label="Events / 24h"
-          value={recent.length}
-          sub={`${warns} warn · ${errors} error`}
-        />
-      </div>
+      {/* What needs looking at, before any number: a page that buries its
+          one warning under four healthy counts reads as healthy. */}
+      {(unsettled.length > 0 || overBudget.length > 0 || nodeStats?.breaker_open) && (
+        <div className="space-y-2">
+          {nodeStats?.breaker_open ? (
+            <AttentionBanner tone="error" label="Breaker open" to="/events" subject="autoscaler">
+              scaling and rollouts are paused until events quiet down
+            </AttentionBanner>
+          ) : null}
+          {unsettled.slice(0, 3).map(({ svc, allocs: mine, health: h }) => (
+            <AttentionBanner
+              key={`${svc.Project}/${svc.Service}`}
+              tone="warn"
+              label="Warning"
+              to={`/services/${svc.Project}/${svc.Service}`}
+              subject={`${svc.Project}/${svc.Service}`}
+            >
+              {h.label}, {mine.filter((a) => a.state === 'running').length} of {svc.Count} replica
+              {svc.Count === 1 ? '' : 's'} ready
+            </AttentionBanner>
+          ))}
+          {overBudget.slice(0, 2).map(({ storage, mount }) => (
+            <AttentionBanner
+              key={`${storage.project}/${storage.name}`}
+              tone="error"
+              label="Over budget"
+              to="/storage"
+              subject={`${storage.project}/${storage.name}`}
+            >
+              {mount.used_bytes !== undefined && mount.size_bytes !== undefined
+                ? `${formatBytes(mount.used_bytes)} used of a ${formatBytes(mount.size_bytes)} budget`
+                : 'a mount is over its declared budget'}
+            </AttentionBanner>
+          ))}
+        </div>
+      )}
 
-      <div className="grid gap-4 lg:grid-cols-5">
-        <UtilisationCard
-          node={nodeStats}
-          history={node.data?.history ?? null}
-          seeded={node.data?.history !== undefined || node.data?.history_omitted === true}
-          connected={node.connected}
-        />
+      <StatStrip
+        cells={[
+          {
+            label: 'Services',
+            value: statuses.length,
+            sub: unsettled.length === 0 ? 'all healthy' : `${healthy} healthy`,
+          },
+          { label: 'Allocations', value: allAllocs.length, sub: `${running} running` },
+          {
+            label: 'Builds',
+            value: building,
+            tone: building > 0 ? 'primary' : 'default',
+            sub: building > 0 ? 'slot 1/1 in use' : 'slot 0/1 · idle',
+          },
+          {
+            label: 'Events · 24h',
+            value: recent.length,
+            sub: `${warns} warn · ${errors} error`,
+          },
+        ]}
+      />
 
-        <Card className="lg:col-span-2">
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>Recent events</CardTitle>
-            <Link to="/events" className="font-mono text-xs text-primary hover:underline">
-              view all →
+      <UtilisationStrip
+        node={nodeStats}
+        history={node.data?.history ?? null}
+        seeded={node.data?.history !== undefined || node.data?.history_omitted === true}
+        connected={node.connected}
+      />
+
+      <div className="grid items-start gap-x-6 gap-y-4 lg:grid-cols-5">
+        <section className="lg:col-span-2">
+          <div className="mb-2 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">Services</h2>
+            <Link to="/services" className="font-mono text-xs text-muted-foreground hover:text-foreground">
+              All services →
             </Link>
-          </CardHeader>
-          <CardContent>
-            {feed.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Nothing has happened yet.</p>
+          </div>
+          <Card className="divide-y divide-border/60 px-3">
+            {statuses.length === 0 ? (
+              <p className="py-3 text-sm text-muted-foreground">No services yet.</p>
             ) : (
-              feed.slice(0, 5).map((e) => <EventRow key={e.id} event={e} />)
+              statuses.map((s) => <ServiceLine key={`${s.svc.Project}/${s.svc.Service}`} {...s} />)
             )}
-          </CardContent>
-        </Card>
+          </Card>
+        </section>
+
+        <section className="lg:col-span-3">
+          <div className="mb-2 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">Activity</h2>
+            <Link to="/events" className="font-mono text-xs text-muted-foreground hover:text-foreground">
+              All events →
+            </Link>
+          </div>
+          {feed.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nothing has happened yet.</p>
+          ) : (
+            feed.slice(0, 6).map((e) => <EventRow key={e.id} event={e} />)
+          )}
+        </section>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Autoscaler decisions</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {nodeStats?.breaker_open ? (
-              <p className="pb-2 text-sm text-status-error">
-                The circuit breaker is open: scaling and rollouts are paused.
-              </p>
-            ) : null}
-            {decisions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No scaling decisions recently.</p>
-            ) : (
-              decisions.map((d) => (
-                <div
-                  key={`${d.service}-${d.at}`}
-                  className="flex items-baseline gap-3 border-b border-border/50 py-2 text-sm last:border-0"
-                >
-                  <span className="shrink-0 font-mono">{d.service}</span>
-                  {d.from !== undefined && d.to !== undefined ? (
-                    <span
-                      className={`shrink-0 font-mono tabular-nums ${
-                        d.direction === 'up' ? 'text-status-ok' : 'text-status-info'
-                      }`}
-                    >
-                      {d.from} → {d.to}
-                    </span>
-                  ) : null}
-                  <span className="min-w-0 truncate text-muted-foreground">{d.reason}</span>
-                  <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
-                    {formatDateTime(d.at, style)}
-                  </span>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>Backups</CardTitle>
-            {backups.data?.replication ? (
-              <span
-                className={`font-mono text-xs ${
-                  isStale(backups.data.replication.last_segment_at)
-                    ? 'text-status-error'
-                    : 'text-status-ok'
-                }`}
-              >
-                CDC lag {replicationLag(backups.data.replication.last_segment_at)}
-              </span>
-            ) : null}
-          </CardHeader>
-          <CardContent>
-            {backups.data === null ? (
-              <p className="text-sm text-status-error">
-                No backup destination is configured. This node's state exists only on its
-                own disk.
-              </p>
-            ) : backups.data ? (
-              <>
-                <KeyValue label="Last archive" mono>
-                  {backups.data.backups[0]
-                    ? `${backups.data.backups[0].id} · ${formatBytes(backups.data.backups[0].snapshot.size)}`
-                    : 'none yet'}
-                </KeyValue>
-                <KeyValue label="S3 replication" mono>
-                  {backups.data.replication.failures > 0 ? (
-                    <span className="text-status-error">
-                      {backups.data.replication.failures} failure(s)
-                    </span>
-                  ) : isStale(backups.data.replication.last_segment_at) ? (
-                    <span className="text-status-error">stale</span>
-                  ) : (
-                    <span className="text-status-ok">in sync</span>
-                  )}
-                </KeyValue>
-                <KeyValue label="Encryption" mono>
-                  AEAD · xchacha20-poly1305
-                </KeyValue>
-                <KeyValue label="Archives retained" mono>
-                  {backups.data.backups.length}
-                </KeyValue>
-              </>
-            ) : (
-              <KeyValueSkeleton rows={4} />
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <BackupsLine backups={backups.data} />
     </div>
   )
 }
 
+/** ServiceLine is one row of the dashboard's service list: dot, name, the
+ * settling word, ready count. Compact on purpose - the Services page has
+ * the full table. */
+function ServiceLine({ svc, allocs: mine, health }: { svc: Service; allocs: Alloc[]; health: Health }) {
+  const ready = mine.filter((a) => a.state === 'running').length
+  const word = health.settled && svc.Count > 0 ? 'running' : health.label
+  return (
+    <Link
+      to={`/services/${svc.Project}/${svc.Service}`}
+      className="flex items-center gap-2.5 py-2.5 transition-colors hover:bg-muted/40"
+    >
+      <StatusDot tone={health.settled ? 'ok' : 'warn'} />
+      <span className="min-w-0 truncate font-mono text-sm">
+        {svc.Project}/{svc.Service}
+      </span>
+      <span
+        className={`ml-auto shrink-0 text-xs ${health.settled ? 'text-muted-foreground' : 'text-status-warn'}`}
+      >
+        {word}
+      </span>
+      <span className="w-10 shrink-0 text-right font-mono text-xs tabular-nums">
+        {ready}/{svc.Count}
+      </span>
+    </Link>
+  )
+}
+
 /**
- * UtilisationCard is the node's own numbers (procfs, polled every 10 s), each
- * accumulated into a sparkline client-side. CPU and memory are pinned to 100
- * so a flat 2% line and a flat 90% one cannot look the same.
+ * UtilisationStrip is the node's own numbers (procfs, 5 s live) as the
+ * mockup's second instrument row: big value, quiet denominator, a bare
+ * sparkline. The GPU cell exists only when a GPU is visible: a GPU-less
+ * node gets three cells, not an empty fourth; absence is not a 0% card.
  */
-function UtilisationCard({
+function UtilisationStrip({
   node,
   history,
   seeded,
   connected,
 }: {
-  node: NodeStats | undefined
+  node: ReturnType<typeof nodeSampleSchema.parse> | undefined
   history: StatsHistory | null
   seeded: boolean
   connected: boolean
@@ -284,101 +298,152 @@ function UtilisationCard({
   const memory = useTimedSeries(
     seriesKey('node', 'memory'), machine?.memory_percent, at, history, 'memory')
   const load = useTimedSeries(seriesKey('node', 'load1'), machine?.load1, at, history, 'load1')
-  const runningSeries = useTimedSeries(
-    seriesKey('node', 'allocs_running'), node?.running, node?.at ?? '', history, 'allocs_running')
   const gpuUtil = useTimedSeries(
     seriesKey('node', 'gpu_util'), machine?.gpu_util_percent, at, history, 'gpu_util')
-  const gpu = useTimedSeries(
+  const gpuVram = useTimedSeries(
     seriesKey('node', 'gpu_vram'), machine?.gpu_vram_percent, at, history, 'gpu_vram')
 
-  // One verdict for the card: every panel here is fed by the same poll and the
+  // One verdict for the strip: every cell is fed by the same poll and the
   // same seed, so they are never empty for different reasons.
   const status = seriesStatus({ points: cpu.times.length, seeded, connected })
 
-  const memoryText =
+  const memUsed =
     machine?.memory_total_bytes !== undefined && machine.memory_available_bytes !== undefined
-      ? `${formatBytes(machine.memory_total_bytes - machine.memory_available_bytes)} / ${formatBytes(machine.memory_total_bytes)}`
+      ? machine.memory_total_bytes - machine.memory_available_bytes
       : undefined
 
-  // The GPU panel exists only when a GPU is visible: a GPU-less node gets no
-  // panel, not an empty one; absence is not a 0% card.
   const gpus = machine?.gpus ?? []
   const hasGPU =
     gpus.length > 0 ||
-    gpu.values.some((v) => v !== null) ||
+    gpuVram.values.some((v) => v !== null) ||
     gpuUtil.values.some((v) => v !== null)
-  const vramUsed = gpus.reduce((sum, g) => sum + (g.vram_used_bytes ?? 0), 0)
-  const vramTotal = gpus.reduce((sum, g) => sum + (g.vram_total_bytes ?? 0), 0)
-  const gpuText =
-    vramTotal > 0 ? `${formatBytes(vramUsed)} / ${formatBytes(vramTotal)}` : undefined
-  // A dash with no name on it reads as a broken panel rather than as a card
-  // whose driver publishes nothing, so each GPU panel names its cards when it
-  // has no number of its own to draw (v1.91). The two conditions are separate
-  // because the absences are: an integrated GPU has no VRAM *and* no busy
-  // counter, while a card can easily report one and not the other.
-  const cardNames = gpus.map((g) => g.name).join(', ') || undefined
-  const utilNames = gpus.some((g) => g.util_percent !== undefined) ? undefined : cardNames
-  const gpuNames = vramTotal > 0 ? undefined : cardNames
+
+  const cells: StatCell[] = [
+    {
+      label: 'CPU',
+      meta: machine ? `${machine.cores} cores` : undefined,
+      value: machine?.cpu_percent !== undefined ? `${Math.round(machine.cpu_percent)}%` : '–',
+      chart: <StripSpark series={cpu} max={100} unit="%" label="CPU" tone={1} status={status} />,
+    },
+    {
+      label: 'Memory',
+      meta:
+        machine?.memory_total_bytes !== undefined
+          ? `of ${formatBytes(machine.memory_total_bytes)}`
+          : undefined,
+      value: memUsed !== undefined ? formatBytes(memUsed) : '–',
+      chart: (
+        <StripSpark series={memory} max={100} unit="%" label="Memory" tone={2} status={status} />
+      ),
+    },
+    {
+      label: 'Load (1m)',
+      meta: node !== undefined ? `${node.running} allocs` : undefined,
+      value: machine?.load1 !== undefined ? machine.load1.toFixed(2) : '–',
+      chart: <StripSpark series={load} unit="" label="Load" tone={3} status={status} />,
+    },
+  ]
+  if (hasGPU) {
+    cells.push({
+      label: 'GPU',
+      meta:
+        machine?.gpu_vram_percent !== undefined
+          ? `VRAM ${Math.round(machine.gpu_vram_percent)}%`
+          : (gpus.map((g) => g.name).join(', ') || undefined),
+      value:
+        machine?.gpu_util_percent !== undefined
+          ? `${Math.round(machine.gpu_util_percent)}%`
+          : '–',
+      chart: (
+        <StripSpark series={gpuUtil} max={100} unit="%" label="GPU" tone={5} status={status} />
+      ),
+    })
+  }
+
+  return <StatStrip className={hasGPU ? '' : 'lg:grid-cols-3'} cells={cells} />
+}
+
+/** StripSpark adapts a timed series to the Sparkline the strip cells draw:
+ * values only, gaps kept as gaps. */
+function StripSpark({
+  series,
+  max,
+  unit,
+  label,
+  tone,
+  status,
+}: {
+  series: TimedSeries
+  max?: number | undefined
+  unit: string
+  label: string
+  tone: 1 | 2 | 3 | 4 | 5
+  status: SeriesStatus
+}) {
+  return (
+    <Sparkline
+      points={series.values.map((v) => (v === null ? undefined : v))}
+      max={max}
+      unit={unit}
+      tone={tone}
+      status={status}
+      label={`${label} history`}
+      className="h-7 w-full"
+    />
+  )
+}
+
+/** BackupsLine is the mockup's one-line answer to "is the state safely
+ * somewhere else": a status word and three facts, the whole row a link. */
+function BackupsLine({
+  backups,
+}: {
+  backups: Awaited<ReturnType<typeof fetchBackups>> | undefined
+}) {
+  if (backups === undefined) return null
+
+  if (backups === null) {
+    return (
+      <Card className="px-4 py-3">
+        <Link to="/backups" className="flex items-center gap-3 text-sm">
+          <DatabaseBackup size={15} aria-hidden className="shrink-0 text-status-error" />
+          <span className="font-medium text-status-error">No backup destination configured</span>
+          <span className="hidden text-muted-foreground sm:inline">
+            this node's state exists only on its own disk
+          </span>
+          <ArrowRight size={14} aria-hidden className="ml-auto shrink-0 text-muted-foreground" />
+        </Link>
+      </Card>
+    )
+  }
+
+  const stale = isStale(backups.replication.last_segment_at)
+  const failures = backups.replication.failures
+  const latest = backups.backups[0]
+  const trouble = stale || failures > 0
 
   return (
-    <Card className="lg:col-span-3">
-      <CardHeader className="flex-row items-baseline justify-between space-y-0">
-        <CardTitle>Server utilisation</CardTitle>
-        <span className="font-mono text-xs text-muted-foreground">procfs · 5s live</span>
-      </CardHeader>
-      <CardContent className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-        <MetricChartPanel label="CPU" unit="%" series={cpu} scale="percent" latest={machine?.cpu_percent} tone={1} status={status} />
-        <MetricChartPanel
-          label="Memory"
-          unit="%"
-          series={memory}
-          scale="percent"
-          status={status}
-          latest={machine?.memory_percent}
-          {...(memoryText !== undefined ? { valueText: memoryText } : {})}
-          tone={2}
+    <Card className="px-4 py-3">
+      <Link to="/backups" className="flex items-center gap-3 text-sm">
+        <DatabaseBackup
+          size={15}
+          aria-hidden
+          className={`shrink-0 ${trouble ? 'text-status-error' : 'text-muted-foreground'}`}
         />
-        <MetricChartPanel label="Load 1m" unit="" series={load} scale="auto" latest={machine?.load1} tone={3} status={status} />
-        <MetricChartPanel
-          label="Allocs running"
-          unit=""
-          series={runningSeries}
-          scale="auto"
-          status={status}
-          latest={node?.running}
-          tone={4}
-        />
-        {/* Utilisation before VRAM: "is the GPU actually being used" is the
-            question somebody opens this page with, and how full its memory is
-            is the follow-up. A card whose driver publishes no busy counter -
-            every integrated Intel GPU - draws a dash and the card's name, the
-            same shape the VRAM panel takes for a card with no VRAM. */}
-        {hasGPU ? (
-          <MetricChartPanel
-            label={gpus.length > 1 ? `GPU utilisation (${gpus.length} GPUs)` : 'GPU utilisation'}
-            unit="%"
-            series={gpuUtil}
-            scale="percent"
-            status={status}
-            latest={machine?.gpu_util_percent}
-            {...(utilNames !== undefined ? { detail: utilNames } : {})}
-            tone={3}
-          />
-        ) : null}
-        {hasGPU ? (
-          <MetricChartPanel
-            label={gpus.length > 1 ? `GPU VRAM (${gpus.length} GPUs)` : 'GPU VRAM'}
-            unit="%"
-            series={gpu}
-            scale="percent"
-            status={status}
-            latest={machine?.gpu_vram_percent}
-            {...(gpuText !== undefined ? { valueText: gpuText } : {})}
-            {...(gpuNames !== undefined ? { detail: gpuNames } : {})}
-            tone={2}
-          />
-        ) : null}
-      </CardContent>
+        <span className={`font-medium ${trouble ? 'text-status-error' : ''}`}>
+          {failures > 0
+            ? `Backups: ${failures} replication failure${failures === 1 ? '' : 's'}`
+            : stale
+              ? 'Backups stale'
+              : 'Backups in sync'}
+        </span>
+        <span className="hidden min-w-0 truncate font-mono text-xs text-muted-foreground md:inline">
+          {latest ? `last archive ${formatBytes(latest.snapshot.size)}` : 'no archive yet'}
+          {' · '}CDC lag {replicationLag(backups.replication.last_segment_at)}
+          {' · '}AEAD encrypted
+        </span>
+        <ArrowRight size={14} aria-hidden className="ml-auto shrink-0 text-muted-foreground" />
+      </Link>
     </Card>
   )
 }

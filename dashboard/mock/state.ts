@@ -305,6 +305,19 @@ export function nodeStats() {
       memory_available_bytes: Math.round(wander(7, 2, 2, 12, 6) * 1024 * 1024 * 1024),
       memory_percent: wander(56, 8, 10, 95, 7),
       cores: 8,
+      // A GPU, so the dashboard's fourth utilisation cell has something to
+      // say in dev:mock; a GPU-less node renders three cells, and both
+      // shapes deserve a fixture.
+      gpu_util_percent: wander(46, 16, 0, 99, 8),
+      gpu_vram_percent: wander(40, 6, 5, 95, 9),
+      gpus: [
+        {
+          name: 'mock-gpu-0',
+          util_percent: wander(46, 16, 0, 99, 8),
+          vram_used_bytes: Math.round(wander(3.2, 0.5, 0.5, 7.5, 10) * 1024 * 1024 * 1024),
+          vram_total_bytes: 8 * 1024 * 1024 * 1024,
+        },
+      ],
       at: new Date().toISOString(),
     },
     at: new Date().toISOString(),

@@ -25,7 +25,7 @@ export interface MetricChartPanelProps {
    */
   detail?: string | undefined
   scale: ChartScale
-  tone: 1 | 2 | 3 | 4
+  tone: 1 | 2 | 3 | 4 | 5
   /** big is the metric-card form; without it, the compact panel form. */
   big?: boolean | undefined
   /**
@@ -74,7 +74,7 @@ export function MetricChartPanel({
         <span className="text-xs text-muted-foreground">{label}</span>
         <span className="flex items-baseline gap-1.5">
           <span
-            className={cn('font-mono font-semibold tabular-nums', big ? 'text-2xl' : 'text-sm')}
+            className={cn('font-mono tabular-nums', big ? 'text-[22px] font-medium' : 'text-sm font-semibold')}
           >
             {/* A gap is a dash: "measured nothing" is not "measured zero". This
                 is untouched by the states below, which is the whole reason a

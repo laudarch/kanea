@@ -34,7 +34,9 @@ export function TH({ className, ...props }: React.ThHTMLAttributes<HTMLTableCell
   return (
     <th
       className={cn(
-        'px-3 pb-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground',
+        // Mono, 10px, wide-tracked uppercase: the v2 system's column header,
+        // quiet enough that the rows carry the page.
+        'px-4 pb-2 pt-1 text-left font-mono text-[10px] font-normal uppercase tracking-[0.08em] text-muted-foreground',
         className,
       )}
       {...props}
@@ -43,5 +45,5 @@ export function TH({ className, ...props }: React.ThHTMLAttributes<HTMLTableCell
 }
 
 export function TD({ className, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={cn('px-3 py-2.5 align-middle', className)} {...props} />
+  return <td className={cn('px-4 py-3 align-middle', className)} {...props} />
 }

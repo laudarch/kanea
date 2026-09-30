@@ -54,8 +54,8 @@ describe('ranges', () => {
 
 describe('buildOptions', () => {
   const theme = {
-    stroke: { 1: 's1', 2: 's2', 3: 's3', 4: 's4' },
-    fill: { 1: 'f1', 2: 'f2', 3: 'f3', 4: 'f4' },
+    stroke: { 1: 's1', 2: 's2', 3: 's3', 4: 's4', 5: 's5' },
+    fill: { 1: 'f1', 2: 'f2', 3: 'f3', 4: 'f4', 5: 'f5' },
     grid: 'g',
     axis: 'a',
   } as const

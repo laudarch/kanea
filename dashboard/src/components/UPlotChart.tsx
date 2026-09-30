@@ -16,7 +16,7 @@ export interface UPlotChartProps {
   values: (number | null)[]
   unit: string
   label: string
-  tone: 1 | 2 | 3 | 4
+  tone: 1 | 2 | 3 | 4 | 5
   /** percent pins y to 0-100; auto pads 10% over the max with a 0 floor. */
   scale: ChartScale
   className?: string | undefined

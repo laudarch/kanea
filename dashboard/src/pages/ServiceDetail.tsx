@@ -1271,41 +1271,38 @@ function LogPanel({
   // dialog. Both are driven by the same state, so they cannot disagree.
   const logControls = (
     <>
+      {/* Bare mono pills, the mockup's: the value is the label ("shop-api-0",
+          "wait-for-postgres"), so a caption beside it would say it twice.
+          The aria-labels carry what the eye infers from the options. */}
       {allocs.length > 1 ? (
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Allocation
-          <select
-            value={allocId}
-            onChange={(e) => onSelectAlloc(e.target.value)}
-            aria-label="Which allocation's log to show"
-            className="rounded-md border bg-background px-2 py-1 text-xs"
-          >
-            <option value="">all</option>
-            {allocs.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.id}
-              </option>
-            ))}
-          </select>
-        </label>
+        <select
+          value={allocId}
+          onChange={(e) => onSelectAlloc(e.target.value)}
+          aria-label="Which allocation's log to show"
+          className="h-8 rounded-md border border-border bg-card px-2.5 font-mono text-xs"
+        >
+          <option value="">all allocs</option>
+          {allocs.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.id}
+            </option>
+          ))}
+        </select>
       ) : null}
       {inits.length > 0 ? (
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Container
-          <select
-            value={container}
-            onChange={(e) => setSelected(e.target.value)}
-            aria-label="Which container's log to follow"
-            className="rounded-md border bg-background px-2 py-1 text-xs"
-          >
-            <option value="">task</option>
-            {inits.map((step) => (
-              <option key={step.name} value={step.name}>
-                {step.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <select
+          value={container}
+          onChange={(e) => setSelected(e.target.value)}
+          aria-label="Which container's log to follow"
+          className="h-8 rounded-md border border-border bg-card px-2.5 font-mono text-xs"
+        >
+          <option value="">task</option>
+          {inits.map((step) => (
+            <option key={step.name} value={step.name}>
+              {step.name}
+            </option>
+          ))}
+        </select>
       ) : null}
       <input
         type="search"

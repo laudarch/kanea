@@ -220,7 +220,7 @@ describe('ServiceDetail', () => {
 
     const picker = screen.getByLabelText("Which allocation's log to show")
     expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      'all',
+      'all allocs',
       'shop-web-0',
       'shop-web-1',
     ])

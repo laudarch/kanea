@@ -69,7 +69,7 @@ export function PipelineDetail({
   const logLines = logText ? logText.replace(/\n$/, '').split('\n') : []
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
         <BackChip to="/pipelines">Pipelines</BackChip>
         <PageHeader

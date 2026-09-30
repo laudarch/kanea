@@ -90,7 +90,7 @@ export function Services() {
   const attention = rows.filter((r) => r.status.word === 'scaling' || r.status.word === 'degraded')
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Services"
         subtitle={

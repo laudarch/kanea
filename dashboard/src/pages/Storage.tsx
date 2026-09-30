@@ -87,7 +87,7 @@ export function Storage() {
   const over = mounts.filter((m) => m.state === 'over')
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Storage"
         subtitle="Storage resources, their mounts, and usage where it has been measured"

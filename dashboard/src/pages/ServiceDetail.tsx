@@ -147,7 +147,7 @@ export function ServiceDetail({ project, service }: { project: string; service: 
   // rendering four empty panels that pop full a beat later.
   if (!services.data && !desired) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-5">
         <div className="flex flex-wrap items-center gap-3">
           <BackChip to="/services">Services</BackChip>
           <PageHeader title={<span className="font-mono">{key}</span>} />
@@ -194,7 +194,7 @@ export function ServiceDetail({ project, service }: { project: string; service: 
   if (stats.data?.edge) tabs.push({ value: 'edge', label: 'Edge' })
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         back={
           <div className="mb-2">
@@ -1271,14 +1271,6 @@ function LogPanel({
   // dialog. Both are driven by the same state, so they cannot disagree.
   const logControls = (
     <>
-      <input
-        type="search"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder="Filter"
-        aria-label="Filter log lines"
-        className="rounded-md border bg-background px-2 py-1 text-xs"
-      />
       {allocs.length > 1 ? (
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           Allocation
@@ -1315,7 +1307,15 @@ function LogPanel({
           </select>
         </label>
       ) : null}
-      <label className="flex items-center gap-1 text-xs text-muted-foreground">
+      <input
+        type="search"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="Filter…"
+        aria-label="Filter log lines"
+        className="h-8 min-w-40 flex-1 rounded-md border bg-background px-2.5 text-xs"
+      />
+      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
         Follow
       </label>
@@ -1323,19 +1323,10 @@ function LogPanel({
   )
 
   return (
-    <Card>
-      <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
-        <div className="flex items-baseline gap-2">
-          <CardTitle>Logs</CardTitle>
-          <span className="font-mono text-xs text-muted-foreground">
-            tail · {allocId || 'all allocs'} · live{container ? ` · init "${container}"` : ''}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">{logControls}</div>
-      </CardHeader>
-      <CardContent>
-        {error ? <p className="pb-2 text-sm text-destructive">{error}</p> : null}
-        <LogViewer
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2.5">{logControls}</div>
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      <LogViewer
           lines={viewerLines}
           live
           follow={follow}
@@ -1380,8 +1371,7 @@ function LogPanel({
             ) : undefined
           }
         />
-      </CardContent>
-    </Card>
+    </div>
   )
 }
 

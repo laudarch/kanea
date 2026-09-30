@@ -85,7 +85,7 @@ export function Functions() {
   const dropped = functions.data?.invoker_dropped ?? 0
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Functions"
         subtitle="WASM · wasmtime · long-running wasi-http services"

@@ -89,7 +89,7 @@ export function Pipelines() {
   const building = list.some((run) => run.state === 'running')
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Pipelines"
         subtitle="in-process git sync · rootless BuildKit"

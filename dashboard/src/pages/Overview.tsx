@@ -142,7 +142,7 @@ export function Overview() {
       : undefined
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader title="Dashboard" subtitle={subtitle} meta={meta} />
 
       {/* What needs looking at, before any number: a page that buries its

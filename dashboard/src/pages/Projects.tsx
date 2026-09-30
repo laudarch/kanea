@@ -122,7 +122,7 @@ export function Projects() {
   const worstState = worst ? health(worst) : null
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Projects"
         subtitle={

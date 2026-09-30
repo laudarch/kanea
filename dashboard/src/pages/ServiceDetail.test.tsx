@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ServiceDetail } from '@/pages/ServiceDetail'
 import { Router } from '@/lib/router'
@@ -49,13 +49,15 @@ class fakeWebSocket {
   }
 }
 
-/** deliver pushes one topic frame the way the daemon would. */
-function deliver(topic: string, data: unknown) {
+/** deliver pushes one topic frame the way the daemon would. A subscription
+ * scoped to a project/service listens under a composite key, so frames for
+ * one (the logs topic here) must carry it or they land on no listener. */
+function deliver(topic: string, data: unknown, key?: string) {
   const ws = fakeWebSocket.instances.at(-1)
   if (!ws) throw new Error('no socket was opened')
   act(() => {
     ws.open()
-    ws.onmessage?.({ data: JSON.stringify({ type: 'data', topic, data }) })
+    ws.onmessage?.({ data: JSON.stringify({ type: 'data', topic, data, ...(key ? { key } : {}) }) })
   })
 }
 
@@ -172,5 +174,105 @@ describe('ServiceDetail', () => {
 
     renderDetail('blog', 'web')
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('blog/web')
+  })
+
+  // The log picker lists every alloc by name and filters the one merged
+  // stream by alloc_id: a second subscription would be a protocol change,
+  // and every line already says which alloc wrote it.
+  it('filters the log stream to the alloc picked in the dropdown', async () => {
+    renderDetail('shop', 'web')
+    deliver('services', {
+      services: [
+        {
+          Project: 'shop',
+          Service: 'web',
+          Image: 'nginx:1.27',
+          Count: 2,
+          Resources: { CPUMillis: 0, MemoryBytes: 0 },
+          spec_hash: 'abc123',
+        },
+      ],
+    })
+    deliver('allocs', {
+      allocs: [
+        { id: 'shop-web-0', project: 'shop', service: 'web', index: 0, state: 'running' },
+        { id: 'shop-web-1', project: 'shop', service: 'web', index: 1, state: 'running' },
+      ],
+    })
+    deliver(
+      'logs',
+      {
+        lines: [
+          { alloc_id: 'shop-web-0', line: 'from the leader' },
+          { alloc_id: 'shop-web-1', line: 'from the follower' },
+        ],
+      },
+      'logs:shop/web',
+    )
+
+    // The stream hook buffers frames and flushes on an interval, so the
+    // lines land a beat after the frame does.
+    expect(await screen.findByText('from the leader')).toBeTruthy()
+    expect(screen.getByText('from the follower')).toBeTruthy()
+
+    const picker = screen.getByLabelText("Which allocation's log to show")
+    expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'all',
+      'shop-web-0',
+      'shop-web-1',
+    ])
+
+    fireEvent.change(picker, { target: { value: 'shop-web-0' } })
+    expect(screen.getByText('from the leader')).toBeTruthy()
+    expect(screen.queryByText('from the follower')).toBeNull()
+  })
+
+  // The init sequence runs once per service, on the leader alone (R32,
+  // v1.92): its row carries the declared steps with each one's state, and a
+  // follower's row carries none, because it never ran them.
+  it("shows the leader's init steps on the allocations table", () => {
+    renderDetail('shop', 'web')
+    deliver('services', {
+      services: [
+        {
+          Project: 'shop',
+          Service: 'web',
+          Image: 'nginx:1.27',
+          Count: 2,
+          Resources: { CPUMillis: 0, MemoryBytes: 0 },
+          spec_hash: 'abc123',
+          init: [
+            { name: 'wait-for-postgres', image: 'busybox:1.36' },
+            { name: 'migrate', image: 'nginx:1.27' },
+          ],
+        },
+      ],
+    })
+    deliver('allocs', {
+      allocs: [
+        {
+          id: 'shop-web-0',
+          project: 'shop',
+          service: 'web',
+          index: 0,
+          state: 'init',
+          init_step: 1,
+          init_name: 'migrate',
+          init_started_at: new Date(Date.now() - 90_000).toISOString(),
+        },
+        { id: 'shop-web-1', project: 'shop', service: 'web', index: 1, state: 'running' },
+      ],
+    })
+
+    const steps = screen.getByLabelText('Init steps for shop-web-0')
+    const items = within(steps).getAllByRole('listitem')
+    expect(items.map((li) => li.getAttribute('title'))).toEqual([
+      'init "wait-for-postgres": done',
+      'init "migrate": running',
+    ])
+    // The running step carries its elapsed time; absence would leave a stuck
+    // migration indistinguishable from one that just started.
+    expect(items[1]?.textContent).toContain('1m')
+    expect(screen.queryByLabelText('Init steps for shop-web-1')).toBeNull()
   })
 })

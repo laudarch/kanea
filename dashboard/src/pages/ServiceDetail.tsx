@@ -239,6 +239,7 @@ export function ServiceDetail({ project, service }: { project: string; service: 
                       <AllocRow
                         key={alloc.id}
                         alloc={alloc}
+                        inits={desired?.init ?? []}
                         subject={key}
                         stats={(stats.data?.allocs ?? []).find((a) => a.alloc_id === alloc.id)}
                         at={stats.data?.at ?? ''}
@@ -254,7 +255,12 @@ export function ServiceDetail({ project, service }: { project: string; service: 
             </CardContent>
           </Card>
 
-          <LogPanel project={project} service={service} inits={desired?.init ?? []} />
+          <LogPanel
+            project={project}
+            service={service}
+            inits={desired?.init ?? []}
+            allocs={mine}
+          />
 
           <EdgePanel edge={stats.data?.edge} />
         </div>
@@ -955,6 +961,7 @@ function StatsPanel({
 /** AllocRow is one alloc, with its own resource history. */
 function AllocRow({
   alloc,
+  inits,
   subject,
   stats,
   at,
@@ -963,6 +970,7 @@ function AllocRow({
   connected,
 }: {
   alloc: Alloc
+  inits: InitContainer[]
   subject: string
   stats: AllocStats | undefined
   at: string
@@ -990,7 +998,15 @@ function AllocRow({
 
   return (
     <TR>
-      <TD className="pl-0 font-mono text-xs">{alloc.id}</TD>
+      <TD className="pl-0 font-mono text-xs">
+        {alloc.id}
+        {/* The init sequence runs once per service, on the leader alone
+            (R32, v1.92), so only alloc 0 has steps to show; a follower's row
+            carrying them would claim work it never did. */}
+        {inits.length > 0 && alloc.index === 0 ? (
+          <InitSteps alloc={alloc} inits={inits} />
+        ) : null}
+      </TD>
       <TD>
         <StatusDot
           tone={tone === 'ok' ? 'ok' : tone === 'warn' ? 'warn' : tone === 'error' ? 'error' : 'muted'}
@@ -1065,14 +1081,80 @@ function AllocRow({
 }
 
 /** LogPanel streams the service's output over the shared socket. */
+type InitStepState = 'done' | 'running' | 'failed' | 'pending'
+
+/**
+ * initStepStates reads the leader's record against the declared sequence
+ * (R32). `init_step` is a zero-based ordinal with `omitempty`, so absence
+ * means the first step, never "unknown". Outside the `init` state the record
+ * says nothing about individual steps: a leader that reached its task ran
+ * them all (that is what leaving `init` means), and one whose last exit was
+ * an init failure stopped on the step the record still names.
+ */
+function initStepStates(alloc: Alloc, inits: InitContainer[]): InitStepState[] {
+  const current = alloc.init_step ?? 0
+  if (alloc.state === 'init') {
+    return inits.map((_, i) => (i < current ? 'done' : i === current ? 'running' : 'pending'))
+  }
+  if (alloc.last_exit_reason === 'init_failed' || alloc.last_exit_reason === 'init_timeout') {
+    return inits.map((_, i) => (i < current ? 'done' : i === current ? 'failed' : 'pending'))
+  }
+  return inits.map(() => 'done')
+}
+
+const initStepGlyph: Record<InitStepState, { mark: string; className: string }> = {
+  done: { mark: '✓', className: 'text-muted-foreground' },
+  running: { mark: '▸', className: 'text-status-warn' },
+  failed: { mark: '✗', className: 'text-status-error' },
+  pending: { mark: '·', className: 'text-muted-foreground/60' },
+}
+
+/** InitSteps renders the leader's init sequence under its id: one entry per
+ * declared step, marked done, running (with elapsed), failed, or pending. */
+function InitSteps({ alloc, inits }: { alloc: Alloc; inits: InitContainer[] }) {
+  const states = initStepStates(alloc, inits)
+  return (
+    <ol
+      aria-label={`Init steps for ${alloc.id}`}
+      className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5"
+    >
+      {inits.map((step, i) => {
+        const state = states[i] ?? 'done'
+        const glyph = initStepGlyph[state]
+        const elapsed =
+          state === 'running' && alloc.init_started_at
+            ? ` · ${relativeAge(alloc.init_started_at)}`
+            : ''
+        return (
+          <li
+            key={step.name}
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            title={`init "${step.name}": ${state}`}
+          >
+            <span aria-hidden className={glyph.className}>
+              {glyph.mark}
+            </span>
+            <span className={state === 'failed' ? 'text-status-error' : undefined}>
+              {step.name}
+              {elapsed}
+            </span>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
 function LogPanel({
   project,
   service,
   inits,
+  allocs,
 }: {
   project: string
   service: string
   inits: InitContainer[]
+  allocs: Alloc[]
 }) {
   // Which container's log this panel is following: '' is the task, otherwise an
   // init container's block name (R32). Each step writes its own file, so this
@@ -1086,14 +1168,21 @@ function LogPanel({
   const { lines, error, dropped, droppedByDaemon } = useLiveLog(project, service, 200, container)
   const [filter, setFilter] = useState('')
   const [follow, setFollow] = useState(true)
+  // Which alloc's lines to show: '' is every alloc. A filter over the one
+  // merged stream rather than a second subscription, because every line
+  // already carries its alloc_id; derived-validated like the container
+  // picker, so an alloc that rolled away while selected falls back to all.
+  const [allocSelected, setAllocSelected] = useState('')
+  const allocId = allocs.some((a) => a.id === allocSelected) ? allocSelected : ''
 
   // Memoized: at ten thousand buffered lines the filter is no longer free,
   // and this re-runs on every stats frame otherwise.
   const shown = useMemo(() => {
-    if (!filter) return lines
+    const mine = allocId ? lines.filter((l) => l.alloc_id === allocId) : lines
+    if (!filter) return mine
     const needle = filter.toLowerCase()
-    return lines.filter((l) => l.line.toLowerCase().includes(needle))
-  }, [lines, filter])
+    return mine.filter((l) => l.line.toLowerCase().includes(needle))
+  }, [lines, filter, allocId])
   const viewerLines = useMemo(
     () =>
       shown.map((entry, i) => ({
@@ -1116,6 +1205,24 @@ function LogPanel({
         aria-label="Filter log lines"
         className="rounded-md border bg-background px-2 py-1 text-xs"
       />
+      {allocs.length > 1 ? (
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          Allocation
+          <select
+            value={allocId}
+            onChange={(e) => setAllocSelected(e.target.value)}
+            aria-label="Which allocation's log to show"
+            className="rounded-md border bg-background px-2 py-1 text-xs"
+          >
+            <option value="">all</option>
+            {allocs.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.id}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       {inits.length > 0 ? (
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           Container
@@ -1147,7 +1254,7 @@ function LogPanel({
         <div className="flex items-baseline gap-2">
           <CardTitle>Logs</CardTitle>
           <span className="font-mono text-xs text-muted-foreground">
-            tail · all allocs · live{container ? ` · init "${container}"` : ''}
+            tail · {allocId || 'all allocs'} · live{container ? ` · init "${container}"` : ''}
           </span>
         </div>
         <div className="flex items-center gap-2">{logControls}</div>
@@ -1162,7 +1269,9 @@ function LogPanel({
           tintSeverity
           toolbar={{
             copy: true,
-            download: { filename: `${project}-${service}${container ? `-${container}` : ''}.log` },
+            download: {
+              filename: `${allocId || `${project}-${service}`}${container ? `-${container}` : ''}.log`,
+            },
             expand: true,
           }}
           title={`${project}/${service}; logs`}

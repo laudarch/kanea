@@ -306,7 +306,7 @@ func TestSpecSourceServesAServiceScopedSpecOfAPipelinedProject(t *testing.T) {
 
 func TestSpecSourceRefusalNamesTheField(t *testing.T) {
 	h := newAuthHarness(t, withRenderer(fakeRenderer{
-		genErr: errors.New("cannot generate a spec for shop/web: its volume blocks are not expressible"),
+		genErr: errors.New(`cannot generate a spec for shop/web: file "nginx.conf" interpolates a secret`),
 	}))
 	ctx := context.Background()
 

@@ -10,6 +10,7 @@ import (
 	"github.com/m18h/kanea/internal/reconciler"
 	"github.com/m18h/kanea/internal/runtime"
 	"github.com/m18h/kanea/internal/secrets"
+	"github.com/m18h/kanea/internal/storage"
 )
 
 // renderText runs the real renderer over one file, as the API routes do.
@@ -521,13 +522,22 @@ service "web" {
 }
 
 func TestGenerateRefusesWhatItCannotExpress(t *testing.T) {
+	// Volumes stopped being a member of the refusal list in v1.112 (the
+	// inlined Resource regenerates the storage block), so the doctrine -
+	// refuse by name, never emit a spec that means something else - is
+	// pinned on a case the spec syntax genuinely cannot carry: a
+	// non-integer scaling target, which `metric { target = N }` parses as
+	// an int.
 	svc := reconciler.Desired{
 		Project: "shop", Service: "web", Count: 1, Image: "nginx:1.29-alpine",
-		Volumes: []reconciler.Volume{{Name: "data", Storage: "local-ssd", MountPath: "/data"}},
+		Scaling: &reconciler.ScalingPolicy{
+			Min: 1, Max: 3,
+			Metrics: []reconciler.ScalingMetric{{Name: "cpu", Target: 70.5}},
+		},
 	}
 	if _, err := toHCL([]reconciler.Desired{svc}, nil); err == nil {
-		t.Fatal("a service with volumes generated instead of refusing")
-	} else if !strings.Contains(err.Error(), "volume") {
+		t.Fatal("a service with a non-integer scaling target generated instead of refusing")
+	} else if !strings.Contains(err.Error(), "cpu") {
 		t.Errorf("the refusal does not name the field: %v", err)
 	}
 }
@@ -672,6 +682,211 @@ service "web" {
 		if !reflect.DeepEqual(original[i], regenerated[i]) {
 			t.Errorf("service %s did not round-trip.\nwant: %+v\ngot:  %+v\ngenerated:\n%s",
 				original[i].Service, original[i], regenerated[i], text)
+		}
+	}
+}
+
+// Volumes round-trip through generation (v1.112): the storage declaration was
+// inlined into every volume record by toDesired (v1.69), so toHCL reconstructs
+// the storage blocks from the records and the old "not reconstructible"
+// refusal is gone. DeepEqual covers Volume.Resource, so a storage block field
+// the generator forgot to write back fails here by name.
+func TestVolumesRoundTripThroughGeneration(t *testing.T) {
+	original, pipelines := renderText(t, `
+spec_version = 1
+project "media" {}
+
+storage "library" { type = "local" }
+
+storage "archive" {
+  type   = "host"
+  path   = "/srv/archive"
+  create = true
+}
+
+storage "shared" {
+  type   = "nfs"
+  server = "10.0.0.9"
+  export = "/exports/media"
+}
+
+service "db" {
+  project = "media"
+  task "app" {
+    image = "postgres:17"
+    user {
+      uid = 999
+      gid = 999
+    }
+  }
+  # Bare volume: ownership arrives by inheritance from task.user (R24), and
+  # the record's resolved literals must regenerate into a spec that converts
+  # back to the same values.
+  volume "data" {
+    storage    = "library"
+    mount_path = "/var/lib/postgresql/data"
+    size       = "10GiB"
+  }
+}
+
+service "indexer" {
+  project = "media"
+  task "app" { image = "ghcr.io/example/indexer:3" }
+  volume "cache" {
+    storage    = "library"
+    mount_path = "/cache"
+    uid        = 1000
+    gid        = 1000
+    mode       = "0750"
+  }
+  volume "archive" {
+    storage    = "archive"
+    mount_path = "/archive"
+    read_only  = true
+  }
+  volume "media" {
+    storage    = "shared"
+    mount_path = "/media"
+  }
+}
+
+service "player" {
+  project = "media"
+  task "app" { image = "ghcr.io/example/player:1" }
+  volume "media" {
+    storage    = "shared"
+    mount_path = "/data/media"
+    read_only  = true
+  }
+}
+`)
+	if len(original) != 3 {
+		t.Fatalf("services = %d, want 3", len(original))
+	}
+	if got := original[0].Volumes; len(got) != 1 || got[0].UID == nil || *got[0].UID != 999 {
+		t.Fatalf("db volume did not inherit ownership: %+v", got)
+	}
+
+	text, err := toHCL(original, pipelines)
+	if err != nil {
+		t.Fatalf("toHCL: %v", err)
+	}
+	// One declaration per storage, however many services mount it.
+	if n := strings.Count(text, `storage "shared"`); n != 1 {
+		t.Fatalf(`storage "shared" declared %d times, want 1:`+"\n%s", n, text)
+	}
+
+	regenerated, _ := renderText(t, text)
+	if len(regenerated) != len(original) {
+		t.Fatalf("regenerated services = %d, want %d\n%s", len(regenerated), len(original), text)
+	}
+	for i := range original {
+		if !reflect.DeepEqual(original[i], regenerated[i]) {
+			t.Errorf("service %s did not round-trip.\nwant: %+v\ngot:  %+v\ngenerated:\n%s",
+				original[i].Service, original[i], regenerated[i], text)
+		}
+	}
+}
+
+// An undeclared field regenerates as omission, the R11 rule applied to
+// volumes: a bare volume must not grow ownership or a budget in the text.
+// (The nfs volume in the round-trip spec above pins the driver half: its
+// service declares a user, and inheritance stopped at the driver.)
+func TestBareVolumeRegeneratesBare(t *testing.T) {
+	original, pipelines := renderText(t, `
+spec_version = 1
+project "media" {}
+storage "shared" {
+  type   = "nfs"
+  server = "10.0.0.9"
+  export = "/exports/media"
+}
+service "player" {
+  project = "media"
+  task "app" {
+    image = "ghcr.io/example/player:1"
+    user {
+      uid = 1000
+      gid = 1000
+    }
+  }
+  volume "media" {
+    storage    = "shared"
+    mount_path = "/media"
+  }
+}
+`)
+	if v := original[0].Volumes[0]; v.UID != nil || v.Mode != nil || v.SizeBytes != 0 {
+		t.Fatalf("nfs volume gained ownership or a budget in conversion: %+v", v)
+	}
+	text, err := toHCL(original, pipelines)
+	if err != nil {
+		t.Fatalf("toHCL: %v", err)
+	}
+	// Scoped to the volume block: the task's user block legitimately carries
+	// uid/gid, and matching those would fail this test for the wrong reason.
+	start := strings.Index(text, `volume "media"`)
+	if start < 0 {
+		t.Fatalf("generated spec has no volume block:\n%s", text)
+	}
+	vol := text[start:]
+	vol = vol[:strings.Index(vol, "}")+1]
+	for _, attr := range []string{"uid", "gid", "mode", "size", "read_only"} {
+		if strings.Contains(vol, attr) {
+			t.Errorf("generated volume declares %s nobody wrote:\n%s", attr, vol)
+		}
+	}
+	regenerated, _ := renderText(t, text)
+	if !reflect.DeepEqual(original[0], regenerated[0]) {
+		t.Errorf("bare volume did not round-trip.\nwant: %+v\ngot:  %+v", original[0], regenerated[0])
+	}
+}
+
+// Two volumes naming one storage with unequal inlined copies is spec drift
+// between applies; the generator refuses by name rather than pick a side.
+func TestConflictingStorageCopiesRefuseGeneration(t *testing.T) {
+	services := []reconciler.Desired{
+		{
+			Project: "media", Service: "a", Image: "x", Count: 1,
+			Volumes: []reconciler.Volume{{
+				Name: "v", Storage: "shared", MountPath: "/a",
+				Resource: storage.Resource{Name: "shared", Type: "nfs", Server: "10.0.0.9", Export: "/old"},
+			}},
+		},
+		{
+			Project: "media", Service: "b", Image: "y", Count: 1,
+			Volumes: []reconciler.Volume{{
+				Name: "v", Storage: "shared", MountPath: "/b",
+				Resource: storage.Resource{Name: "shared", Type: "nfs", Server: "10.0.0.9", Export: "/new"},
+			}},
+		},
+	}
+	_, err := toHCL(services, nil)
+	if err == nil || !strings.Contains(err.Error(), `storage "shared"`) {
+		t.Fatalf("err = %v, want a refusal naming the storage", err)
+	}
+}
+
+// formatByteSize must be the exact inverse of ParseByteSize, or a budget
+// changes by regeneration alone.
+func TestFormatByteSizeInvertsParse(t *testing.T) {
+	for _, tc := range []struct {
+		n    int64
+		want string
+	}{
+		{10 << 30, "10GiB"},
+		{512 << 20, "512MiB"},
+		{4 << 10, "4KiB"},
+		{1500, "1500"},
+		{3 << 30, "3GiB"},
+	} {
+		got := formatByteSize(tc.n)
+		if got != tc.want {
+			t.Errorf("formatByteSize(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+		back, err := jobspec.ParseByteSize(got)
+		if err != nil || back != tc.n {
+			t.Errorf("ParseByteSize(%q) = %d, %v; want %d", got, back, err, tc.n)
 		}
 	}
 }

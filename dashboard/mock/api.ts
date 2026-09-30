@@ -512,7 +512,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // Only a one-service text can attribute its scalars crudely.
         ...(oneService && count !== undefined ? { Count: Number(count) } : {}),
         ...(oneService && image !== undefined ? { Image: image } : {}),
-        ...(hasVolume ? { Volumes: [{ Name: 'data', Storage: 'media', Path: '/data' }] } : {}),
+        // A service that already owns volumes echoes them from its record
+        // (they ride `...base` since v1.112, so an unchanged generated spec
+        // validates); the fabricated volume only appears when the text adds
+        // one to a service that has none - the v1.103 scope-refusal demo.
+        ...(hasVolume && !(svc && svc.volumes?.length)
+          ? { Volumes: [{ Name: 'data', Storage: 'media', Path: '/data' }] }
+          : {}),
       }
     })
     if (path === '/v1/spec/render') {

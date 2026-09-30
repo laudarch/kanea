@@ -12,6 +12,7 @@ import (
 	"github.com/m18h/kanea/internal/jobspec"
 	"github.com/m18h/kanea/internal/reconciler"
 	"github.com/m18h/kanea/internal/runtime"
+	"github.com/m18h/kanea/internal/storage"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -42,6 +43,32 @@ func toHCL(services []reconciler.Desired, pipelines []gitops.Config) (string, er
 	for _, cfg := range pipelines {
 		byProject[cfg.Project] = cfg
 	}
+
+	// The storage blocks come back out of the volumes that inlined them
+	// (v1.112): toDesired copies the whole declaration into Volume.Resource,
+	// so the union over the generated set IS the declaration set. Two volumes
+	// naming one storage with unequal copies means the spec drifted between
+	// applies, and picking either copy would silently rewrite the other
+	// service's mounts - refused by name instead.
+	storages := map[string]storage.Resource{}
+	var storageNames []string
+	for i := range services {
+		svc := &services[i]
+		for _, v := range svc.Volumes {
+			existing, seen := storages[v.Storage]
+			if !seen {
+				storages[v.Storage] = v.Resource
+				storageNames = append(storageNames, v.Storage)
+				continue
+			}
+			if existing != v.Resource {
+				return "", fmt.Errorf("cannot generate a spec: storage %q is carried with two "+
+					"different declarations by the services that mount it (the spec drifted "+
+					"between applies); edit the original spec file", v.Storage)
+			}
+		}
+	}
+	sort.Strings(storageNames)
 
 	projects := map[string]struct{}{}
 	for _, svc := range services {
@@ -78,6 +105,28 @@ func toHCL(services []reconciler.Desired, pipelines []gitops.Config) (string, er
 					git.SetAttributeValue("require_approval", cty.True)
 				}
 			}
+		}
+		body.AppendNewline()
+	}
+
+	// The exact inverse of storageResource (convert.go): every field the
+	// conversion copied in is written back out, so re-parsing re-inlines the
+	// same Resource and the round trip closes.
+	for _, name := range storageNames {
+		st := storages[name]
+		block := body.AppendNewBlock("storage", []string{name}).Body()
+		block.SetAttributeValue("type", cty.StringVal(st.Type))
+		setOptionalString(block, "bucket", st.Bucket)
+		setOptionalString(block, "endpoint", st.Endpoint)
+		setOptionalString(block, "auth_ref", st.AuthRef)
+		setOptionalString(block, "mode", st.Mode)
+		setOptionalString(block, "server", st.Server)
+		setOptionalString(block, "export", st.Export)
+		setOptionalString(block, "share", st.Share)
+		setOptionalString(block, "options", st.Options)
+		setOptionalString(block, "path", st.Path)
+		if st.Create {
+			block.SetAttributeValue("create", cty.True)
 		}
 		body.AppendNewline()
 	}
@@ -264,15 +313,11 @@ func writeService(body *hclwrite.Body, svc *reconciler.Desired, cfg gitops.Confi
 		return fmt.Errorf("cannot generate a spec for %s/%s: %s is not expressible by the "+
 			"generator; edit the original spec file", svc.Project, svc.Service, field)
 	}
-	// The refusal list. Each of these has spec syntax the generator does not
-	// write yet; emitting a spec without them would apply as a service that
-	// silently lost them.
-	if len(svc.Volumes) > 0 {
-		return refuse("its volume blocks (the storage declarations are not reconstructible)")
-	}
 	// resources.pids round-trips (R11, v1.89): a declared cap regenerates;
 	// the default regenerates as omission. read_only_rootfs and hardening
-	// round-trip too (v1.105): the record's field is the spec's field.
+	// round-trip too (v1.105): the record's field is the spec's field, and so
+	// do volumes (v1.112): the inlined Resource regenerates the storage block
+	// and the rest of the record is the volume block's own fields.
 
 	block := body.AppendNewBlock("service", []string{svc.Service}).Body()
 	block.SetAttributeValue("project", cty.StringVal(svc.Project))
@@ -304,6 +349,7 @@ func writeService(body *hclwrite.Body, svc *reconciler.Desired, cfg gitops.Confi
 	if err := writeTask(block, svc); err != nil {
 		return err
 	}
+	writeVolumes(block, svc)
 
 	if len(svc.Ports) > 0 || len(svc.Publish) > 0 || len(svc.AllowFrom) > 0 {
 		network := block.AppendNewBlock("network", nil).Body()
@@ -743,6 +789,57 @@ func writeInits(block *hclwrite.Body, svc *reconciler.Desired) {
 		}
 		block.AppendNewline()
 	}
+}
+
+// writeVolumes regenerates a service's volume blocks (v1.112), in record order
+// (which is declaration order: the parser appends).
+//
+// Ownership is written as the resolved literals the record carries - the
+// generated-spec contract since v1.63. A uid the original spec inherited from
+// task.user regenerates as an explicit `uid = N`, which conversion treats as a
+// declaration of the same value, so the trip closes; a host volume carries no
+// ownership at all (R24 refused it at the original parse) and emits none.
+func writeVolumes(block *hclwrite.Body, svc *reconciler.Desired) {
+	for i := range svc.Volumes {
+		v := &svc.Volumes[i]
+		body := block.AppendNewBlock("volume", []string{v.Name}).Body()
+		body.SetAttributeValue("storage", cty.StringVal(v.Storage))
+		body.SetAttributeValue("mount_path", cty.StringVal(v.MountPath))
+		if v.ReadOnly {
+			body.SetAttributeValue("read_only", cty.True)
+		}
+		if v.UID != nil {
+			body.SetAttributeValue("uid", cty.NumberIntVal(int64(*v.UID)))
+		}
+		if v.GID != nil {
+			body.SetAttributeValue("gid", cty.NumberIntVal(int64(*v.GID)))
+		}
+		if v.Mode != nil {
+			// Octal with the leading zero, because ParseMode reads octal and
+			// a human reads "0700" as a mode where "700" invites the decimal
+			// misreading the parser exists to prevent.
+			body.SetAttributeValue("mode", cty.StringVal(fmt.Sprintf("%04o", *v.Mode)))
+		}
+		if v.SizeBytes > 0 {
+			body.SetAttributeValue("size", cty.StringVal(formatByteSize(v.SizeBytes)))
+		}
+		block.AppendNewline()
+	}
+}
+
+// formatByteSize is the exact inverse of jobspec.ParseByteSize: the largest
+// binary unit that divides the count evenly, else the plain byte count, so the
+// regenerated string parses back to the identical number.
+func formatByteSize(n int64) string {
+	for _, u := range []struct {
+		suffix string
+		bytes  int64
+	}{{"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}} {
+		if n%u.bytes == 0 {
+			return fmt.Sprintf("%d%s", n/u.bytes, u.suffix)
+		}
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // writeFiles regenerates a service's file blocks (jobspec R35).

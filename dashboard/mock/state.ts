@@ -17,6 +17,21 @@ interface MockService {
   isFunction?: boolean
   /** Init steps (R32), in declaration order. */
   inits?: { name: string; image: string }[]
+  /** Volumes with their storage declaration inlined, the way toDesired
+   * stores them - which is also what lets specSource regenerate the
+   * storage block (v1.112). */
+  volumes?: MockVolume[]
+}
+
+export interface MockVolume {
+  name: string
+  storage: string
+  type: 'local' | 'nfs'
+  mountPath: string
+  readOnly?: boolean
+  sizeBytes?: number
+  server?: string
+  export?: string
 }
 
 export interface MockAlloc {
@@ -62,6 +77,17 @@ export const services: MockService[] = [
     // One completed init step: the leader's row shows a finished sequence,
     // the other init shape beside shop/api's in-flight one.
     inits: [{ name: 'warm-cache', image: 'busybox:1.36' }],
+    // The nfs mount the /v1/volumes fixture reports as over budget.
+    volumes: [
+      {
+        name: 'uploads',
+        storage: 'uploads',
+        type: 'nfs',
+        mountPath: '/srv/uploads',
+        server: 'nas.lan',
+        export: '/export/uploads',
+      },
+    ],
     expose: { domains: ['shop.example.com', 'www.shop.example.com'], port: 3000, tlsMode: 'acme' },
     scaling: {
       min: 2,
@@ -95,6 +121,16 @@ export const services: MockService[] = [
     count: 1,
     image: 'postgres:17',
     generation: 1,
+    // The local volume the /v1/volumes fixture measures inside its budget.
+    volumes: [
+      {
+        name: 'pgdata',
+        storage: 'pgdata',
+        type: 'local',
+        mountPath: '/var/lib/postgresql/data',
+        sizeBytes: 10_737_418_240,
+      },
+    ],
   },
   {
     project: 'shop',
@@ -186,6 +222,34 @@ export function desiredJSON(svc: MockService) {
     // all are). The dashboard schema said `Init` until v0.31.1, and because
     // this mock never served the key at all, dev:mock could not catch it.
     ...(svc.inits ? { init: svc.inits.map((i) => ({ name: i.name, image: i.image })) } : {}),
+    // Volumes in the wire's shape: the pre-v1.84 Go names, with the storage
+    // declaration inlined whole into Resource (v1.69) - every field present,
+    // as an untagged Go struct marshals.
+    ...(svc.volumes
+      ? {
+          Volumes: svc.volumes.map((v) => ({
+            Name: v.name,
+            Storage: v.storage,
+            Resource: {
+              Name: v.storage,
+              Type: v.type,
+              Bucket: '',
+              Endpoint: '',
+              AuthRef: '',
+              Mode: '',
+              Server: v.server ?? '',
+              Export: v.export ?? '',
+              Share: '',
+              Options: '',
+              Path: '',
+              Create: false,
+            },
+            MountPath: v.mountPath,
+            ReadOnly: v.readOnly ?? false,
+            ...(v.sizeBytes ? { size_bytes: v.sizeBytes } : {}),
+          })),
+        }
+      : {}),
     spec_hash: specHash(svc),
   }
 }
@@ -610,6 +674,12 @@ export function uptimeSeconds(): number {
  * would: literals from the mock's desired state, no comments, no variables.
  */
 export function specSource(svc: MockService): string {
+  // The storage blocks come back out of the inlined volume records (v1.112).
+  const storages = (svc.volumes ?? []).map((v) =>
+    v.type === 'nfs'
+      ? `storage "${v.storage}" {\n  type   = "nfs"\n  server = "${v.server ?? ''}"\n  export = "${v.export ?? ''}"\n}\n\n`
+      : `storage "${v.storage}" {\n  type = "local"\n}\n\n`,
+  )
   const lines = [
     `service "${svc.service}" {`,
     `  project = "${svc.project}"`,
@@ -619,6 +689,12 @@ export function specSource(svc: MockService): string {
     `    image = "${svc.image}"`,
     `  }`,
   ]
+  for (const v of svc.volumes ?? []) {
+    lines.push(``, `  volume "${v.name}" {`, `    storage    = "${v.storage}"`, `    mount_path = "${v.mountPath}"`)
+    if (v.readOnly) lines.push(`    read_only  = true`)
+    if (v.sizeBytes) lines.push(`    size       = "${v.sizeBytes % (1 << 30) === 0 ? `${v.sizeBytes / (1 << 30)}GiB` : `${v.sizeBytes}`}"`)
+    lines.push(`  }`)
+  }
   if (svc.expose) {
     lines.push(
       ``,
@@ -632,7 +708,7 @@ export function specSource(svc: MockService): string {
     )
   }
   lines.push(`}`)
-  return `spec_version = 1\n\nproject "${svc.project}" {}\n\n${lines.join('\n')}\n`
+  return `spec_version = 1\n\nproject "${svc.project}" {}\n\n${storages.join('')}${lines.join('\n')}\n`
 }
 
 /**

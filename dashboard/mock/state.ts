@@ -33,6 +33,11 @@ export interface MockAlloc {
   last_exit_reason?: string
   last_exit_message?: string
   last_exit_at?: string
+  /** Which init step an alloc in the `init` state is on (R32); the leader's
+   * fields, since v1.92 runs the sequence on alloc 0 alone. */
+  init_step?: number
+  init_name?: string
+  init_started_at?: string
 }
 
 const startedAt = Date.now()
@@ -54,6 +59,9 @@ export const services: MockService[] = [
     count: 3,
     image: 'registry.example.com/shop/web:f47c1e2',
     generation: 5,
+    // One completed init step: the leader's row shows a finished sequence,
+    // the other init shape beside shop/api's in-flight one.
+    inits: [{ name: 'warm-cache', image: 'busybox:1.36' }],
     expose: { domains: ['shop.example.com', 'www.shop.example.com'], port: 3000, tlsMode: 'acme' },
     scaling: {
       min: 2,
@@ -120,20 +128,31 @@ export function specHash(svc: MockService): string {
 export const allocs: MockAlloc[] = []
 for (const svc of services) {
   for (let i = 0; i < svc.count; i++) {
+    // shop/api's leader is mid-migration (R32/v1.92): state `init`, on the
+    // second step, so the allocations table and the log picker both have an
+    // in-flight sequence to show in dev:mock.
+    const initializing = svc.service === 'api' && i === 0
     allocs.push({
       id: `${svc.project}-${svc.service}-${i}`,
       project: svc.project,
       service: svc.service,
       index: i,
-      state: 'running',
+      state: initializing ? 'init' : 'running',
       image: svc.image,
       restarts: svc.service === 'api' ? 2 : 0,
-      healthy: true,
+      healthy: !initializing,
       spec_hash: specHash(svc),
       created_at: new Date(startedAt - (36 + i) * 3600 * 1000).toISOString(),
+      ...(initializing
+        ? {
+            init_step: 1,
+            init_name: 'migrate',
+            init_started_at: new Date(startedAt - 2 * 60 * 1000).toISOString(),
+          }
+        : {}),
       // The alloc that restarted carries why (PRD v1.68); running now, and
       // OOM-killed last time, which is the case the column exists for.
-      ...(svc.service === 'api'
+      ...(svc.service === 'api' && !initializing
         ? {
             last_exit_reason: 'oom_killed',
             last_exit_message: 'exceeded its 256 MiB memory limit',
@@ -395,8 +414,12 @@ export function logLine(svc: MockService): { alloc_id: string; line: string } | 
   return { alloc_id: alloc.id, line: `${new Date().toISOString().slice(11, 19)} ${line}` }
 }
 
-/** Per-step init transcripts: what each of shop/api's steps would have said. */
+/** Per-step init transcripts: what each declared step would have said. */
 const initLogSamples: Record<string, string[]> = {
+  'warm-cache': [
+    'fetching catalogue snapshot…',
+    'warmed 12 480 entries in 1.8s',
+  ],
   'wait-for-postgres': [
     'waiting for postgres.shop.kanea:5432…',
     'not ready (attempt 1)',
